@@ -1,6 +1,6 @@
 # 腾讯云 AI 校园大使个人运营工作台 V1.0
 
-GPT 负责工作台开发与维护。公开数据保存在 GitHub 仓库，GitHub Pages 由仓库内的 Actions 工作流自动发布；不需要 WorkBuddy 或腾讯云部署连接。
+GPT 负责工作台开发与维护。网页由 Vercel 托管，公开数据保存在 GitHub 仓库；不需要 WorkBuddy 或腾讯云部署连接。
 
 ## 本地启动
 
@@ -20,15 +20,15 @@ npm run build
 npm run preview -- --port 4173
 ```
 
-## GitHub 公共数据与 Pages 部署（当前选定方案）
+## GitHub 公共数据与 Vercel 上线
 
-网站由 GitHub Pages 托管；运营快照保存在同一个公开仓库的 `data/workspace.json`。任何人都可以读取网页和当前数据。仓库源代码、数据文件和完整 Git 提交历史也公开，修改或删除记录不会抹去旧提交中的内容。请只录入适合公开的信息，不要放入个人联系方式、账号口令、企业微信凭据或私密附件。
+工作台入口：[https://campus-ambassador-console.vercel.app/](https://campus-ambassador-console.vercel.app/)。网页由 Vercel 托管，运营快照保存在同一个公开仓库的 `data/workspace.json`。任何人都可以读取网页和当前数据。仓库源代码、数据文件和完整 Git 提交历史也公开，修改或删除记录不会抹去旧提交中的内容。请只录入适合公开的信息，不要放入个人联系方式、账号口令、企业微信凭据或私密附件。
 
 数据读取使用 GitHub 的公开文件地址，不需要 WorkBuddy CloudBase 连接器、腾讯云账号或访问令牌。编辑与 GPT 写入需要由仓库所有者在工作台连接一个 GitHub 细粒度个人存取令牌：资源所有者选择仓库所有者，只允许访问这个工作台仓库，并仅授予 `Contents: Read and write`。网页会核对令牌对应的 GitHub 账号是否为仓库所有者。令牌只放在当前浏览器标签页的 `sessionStorage` 中；关闭标签页后需要重新连接。它不会写进仓库、网页构建配置或交接文件，且只发送到 `api.github.com`。请使用 HTTPS 并设置令牌过期时间。
 
-工作台每次保存都会更新 `data/workspace.json` 并生成公开 Git 提交；所有设备读取同一份数据。版本号和 GitHub 文件 SHA 会阻止旧版本覆盖；遇到冲突时重新读取再修改。工作流忽略数据文件更新，因此保存记录不会重复触发网页构建。GitHub Pages 仅在源码更新或手动运行工作流时重新发布。
+工作台每次保存都会更新 `data/workspace.json` 并生成公开 Git 提交；所有设备读取同一份数据。版本号和 GitHub 文件 SHA 会阻止旧版本覆盖；遇到冲突时重新读取再修改。网页从 GitHub 公开文件地址读取数据，所以记录保存后无需重新构建网页。当前 Vercel 项目没有关联 GitHub 自动构建；源码更新时由 GPT 重新构建并发布到同一 Vercel 项目，稳定网址不变。
 
-公开数据快照已由 `npm run data:seed` 从 `seedWorkspace()` 生成；脚本检测到文件已存在时会拒绝覆盖。工作流文件为 `.github/workflows/pages.yml`，要求公开仓库默认分支为 `main`。推送源码后，Actions 会自动配置 Pages、构建并发布。项目站点地址通常是 `https://<owner>.github.io/<repository>/`。工作流把仓库所有者设为唯一可写账号，不需要把访问令牌设为 GitHub Actions Secret。
+公开数据快照由 `npm run data:seed` 从 `seedWorkspace()` 生成；脚本检测到文件已存在时会拒绝覆盖。当前生产构建使用 GitHub 数据模式并直接发布到 Vercel，不需要 GitHub Actions 工作流或 WorkBuddy 部署连接。Vercel 生产站点公开可读，预览部署保留登录保护。
 
 本地预览 GitHub 模式时，将以下设置写入 `.env.local` 后运行 `npm run dev`：
 
@@ -38,10 +38,10 @@ VITE_GITHUB_REPOSITORY=owner/repository
 VITE_GITHUB_BRANCH=main
 VITE_GITHUB_DATA_PATH=data/workspace.json
 VITE_GITHUB_EDITOR_LOGIN=owner
-VITE_BASE_PATH=./
+VITE_BASE_PATH=/
 ```
 
-`VITE_*` 配置会出现在公开网页代码中，只能填写仓库名、分支、路径和公开的 GitHub 登录名。GitHub 令牌绝不能写入 `VITE_*`、源码、Pages 构建变量或 GitHub Actions Secrets。GitHub 模式使用证据链接；附件上传仍需 CloudBase 存储，不能把私密文件放进公开仓库。
+`VITE_*` 配置会出现在公开网页代码中，只能填写仓库名、分支、路径和公开的 GitHub 登录名。GitHub 令牌绝不能写入 `VITE_*`、源码或 Vercel 环境变量。GitHub 模式使用证据链接；附件上传仍需 CloudBase 存储，不能把私密文件放进公开仓库。
 
 GitHub 模式适用于个人、低频编辑，工作区仍限制 3,000 条记录和 750 KiB 快照。频繁并发、多用户协作或需要隐私隔离时应使用受保护的数据库。
 
@@ -163,13 +163,12 @@ src/                  界面、数据模型、本地 / CloudBase / GitHub 持久
 scripts/wecom-sync.mjs 企业微信只读抓取与候选归纳
 scripts/create-seed-snapshot.mjs 从真实初始数据生成公开仓库快照
 data/workspace.json    GitHub 模式读取和更新的公开运营快照
-.github/workflows/pages.yml GitHub Pages 构建和部署
 scripts/browser-smoke.js 真实浏览器流程验收
 tests/                统计、关系、导入、存储冲突和 CLI 离线测试
 database/             结构迁移、权限规则与执行说明
-docs/WORKBUDDY-HANDOFF.md 部署交接
+docs/GPT-CONTROL.md   GPT 网页操作说明
 docs/TEST-REPORT.md    本次验证结果与限制
-dist/                 构建输出；当前为 GitHub 模式验证包，仓库配置只是本机构建用占位值，不可直接作为正式站点发布
+dist/                 GitHub 数据模式生产构建；源码更新后由 GPT 发布到 Vercel
 ```
 
 ## 常见问题

@@ -1,22 +1,23 @@
 # V1.0 本机测试报告
 
-验证日期：2026-11-02（北京时间）。环境：Windows、Node.js 24.15.0、npm 11.12.1。代码已增加 GitHub 公共数据模式；公开仓库已创建，首次公开部署与真实写入验收待完成。
+验证日期：2026-11-02（北京时间）。环境：Windows、Node.js 24.15.0、npm 11.12.1。公开仓库已创建，Vercel 生产站点已发布；浏览器内实际编辑授权和写入验收仍待完成。
 
 ## GitHub 方案本次验证
 
 | 检查 | 结果 |
 | --- | --- |
-| TypeScript 检查与本地 / CloudBase / GitHub 三种模式生产构建 | 均通过；GitHub 模式使用 `hxujunjie/campus-ambassador-console` 作为本机构建配置，不代表仓库已存在或发布 |
+| TypeScript 检查与本地 / CloudBase / GitHub 三种模式生产构建 | 均通过；正式构建使用 `hxujunjie/campus-ambassador-console` 与 Vercel 根路径配置 |
 | 单元与适配器契约测试 | 6 个测试文件、34 项通过 |
 | 匿名公开快照读取 | 适配器模拟通过；读取公开 JSON 并验证 schema / revision |
 | 编辑授权流程 | 适配器模拟通过；核对 GitHub 登录名、仓库写权限和数据文件后才保存会话令牌 |
 | GitHub 并发保护 | 适配器模拟通过；版本不符时拒绝写入，使用文件 SHA 更新 |
-| GitHub 模式浏览器页面 | 生产预览可打开；展示 8 条初始数据、公开只读状态和编辑授权入口 |
+| Vercel 生产页面与主 JS 资源 | 均通过公开 HTTPS 请求返回 HTTP 200 |
+| GitHub 公开 JSON 与跨域响应 | `data/workspace.json` 返回 HTTP 200，响应允许跨域读取 |
 | 390 × 844 窄屏 | 页面内容宽 375px、对话框内容宽 345px；无页面级横向溢出 |
 
-浏览器预览访问了尚未创建的 `hxujunjie/campus-ambassador-console`，公开 JSON 请求返回预期 404，应用回退到相同的真实初始种子数据。该环境下没有尝试 GitHub 写入。正式仓库中已经包含 `data/workspace.json`，部署后的 404 情况仍需验收。
+静态生产构建已上传至 Vercel 项目 `campus-ambassador-console`，稳定地址为 `https://campus-ambassador-console.vercel.app/`。项目只对预览部署启用登录保护；生产页面公开可读。Vercel 项目未关联 GitHub 自动构建，后续源码更新由 GPT 重新构建并发布。公开数据仍从 GitHub 仓库实时读取，保存记录不需要重建静态页面。
 
-GitHub 模式的实际写入、PAT 权限、跨设备数据传播、GitHub Pages Actions 和正式域名尚未真实验收。数据文件写入会生成公开提交；本机没有 GitHub CLI，也没有可用仓库被 GitHub 连接器列出，因此没有创建远程仓库或发布页面。
+尚未在实际网页标签页输入所有者 PAT，因此 GitHub 模式的网页写入、跨设备传播和冲突保护尚未做端到端验证；GPT 操作接口的离线和浏览器模拟测试已通过。Vercel 公开站点与原始 JSON 地址仅完成 HTTP/CORS 检查，未对生产页做完整视觉浏览器验收。
 
 ## 已有界面验收基线
 
@@ -42,14 +43,14 @@ GitHub 模式的实际写入、PAT 权限、跨设备数据传播、GitHub Pages
 
 ## 尚待部署验收
 
-- GitHub Actions 成功运行并公开发布 GitHub Pages。
-- 正式站点的匿名读取与实际 GitHub 细粒度令牌验证。
+- Vercel 生产页浏览器运行、数据展示和响应式布局验收。
+- 正式站点连接所有者 PAT 后，实际读取、新建、更新、删除、回读和跨设备一致性验收。
 - 在授权后验证 GPT 读取、新建、更新任务状态、删除、回读；其他设备读取新提交并确认冲突保护。
 - 选定实际企业微信群/统计来源后的只读抓取与业务数据核验。
 - GitHub 模式不支持附件上传；如改用 CloudBase，附件权限仍须单独实测。
 - 正式域名、HTTPS、回滚与长期可用性。
 
-GitHub 构建输出仍包含 Vite 对 Zod 注释的提示和一个超过 500 KB 的 CloudBase SDK 分块提示；构建成功，GitHub 模式不加载 CloudBase SDK。实际部署由 Pages 工作流重新构建，勿直接上传本机 `dist/`。
+构建输出包含 Vite 对 Zod 注释位置的提示和一个超过 500 KB 的分块提示；构建成功。当前 Vercel 生产站点部署的是 GitHub 数据模式构建。源码更新时，GPT 需要重新构建并向现有 Vercel 项目发布新静态构建。
 
 ## 复现
 
@@ -61,7 +62,7 @@ $env:VITE_GITHUB_REPOSITORY='owner/repository'
 $env:VITE_GITHUB_BRANCH='main'
 $env:VITE_GITHUB_DATA_PATH='data/workspace.json'
 $env:VITE_GITHUB_EDITOR_LOGIN='owner'
-$env:VITE_BASE_PATH='./'
+$env:VITE_BASE_PATH='/'
 npm run build
 ```
 
