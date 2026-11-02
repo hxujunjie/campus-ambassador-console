@@ -1,0 +1,49 @@
+{
+  "name": "campus-ambassador-console",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "vitest run",
+    "wecom:check": "node scripts/wecom-sync.mjs check",
+    "wecom:pull": "node scripts/wecom-sync.mjs pull",
+    "browser:open": "playwright-cli -s=campus open http://127.0.0.1:5173/ --headed",
+    "test:browser": "playwright-cli -s=campus --raw run-code --filename=scripts/browser-smoke.js",
+    "db:migrate": "node database/migrate.mjs",
+    "data:seed": "node scripts/create-seed-snapshot.mjs",
+    "test:agent": "playwright-cli -s=campus --raw run-code --filename=scripts/agent-browser-check.js"
+  },
+  "dependencies": {
+    "@cloudbase/js-sdk": "^2.24.0",
+    "@radix-ui/react-dialog": "^1.1.15",
+    "@tailwindcss/vite": "^4.1.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "recharts": "^3.0.0",
+    "tailwindcss": "^4.1.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@cloudbase/node-sdk": "^4.2.1",
+    "@playwright/cli": "^0.1.23",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "~5.9.3",
+    "vite": "^7.0.0",
+    "vitest": "^5.0.5"
+  },
+  "overrides": {
+    "@cloudbase/node-sdk": {
+      "axios": "0.34.0"
+    }
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

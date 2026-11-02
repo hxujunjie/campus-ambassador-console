@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "collection": "campus_workspaces",
+  "description": "V1 personal workspace; one revisioned snapshot per authenticated UID",
+  "fields": {
+    "_id": "authenticated UID; one workspace per account",
+    "_openid": "authenticated UID; immutable owner",
+    "revision": "integer; compare-and-swap on every save",
+    "payload": "JSON string; schemaVersion=1; related entities in rows[]; max 750 KiB",
+    "updatedAt": "ISO 8601 UTC timestamp"
+  },
+  "indexes": [{ "name": "_id_", "fields": { "_id": 1 }, "unique": true, "builtin": true }],
+  "seed": "Created only on first authenticated app access; never during migration"
+}

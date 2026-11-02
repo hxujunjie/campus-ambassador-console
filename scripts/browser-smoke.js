@@ -1,0 +1,77 @@
+async (previewPage) => {
+  const context = await previewPage.context().browser().newContext({viewport:{width:1440,height:1100}});
+  const page = await context.newPage();
+  try {
+  const checks = [];
+  const assert = (condition, message) => { if (!condition) throw new Error(message); checks.push(message); };
+  const nav = async (name) => { if (await page.getByRole('button', { name: '打开导航', exact: true }).isVisible()) await page.getByRole('button', { name: '打开导航', exact: true }).click(); await page.getByRole('navigation').getByRole('button', { name: new RegExp('^' + name) }).click(); };
+  const state = () => page.evaluate(() => JSON.parse(localStorage.getItem('campus-console:workspace:v1')));
+  const save = async () => { await page.getByRole('button', { name: '保存记录', exact: true }).click(); await page.getByRole('dialog').waitFor({ state: 'hidden' }); };
+  const create = async (button, name, setup) => { await page.getByRole('button', { name: button, exact: true }).first().click(); await page.getByRole('dialog').getByRole('textbox', { name: '名称 *', exact: true }).fill(name); if (setup) await setup(page.getByRole('dialog')); await save(); };
+  const remove = async name => { const button = page.getByRole('button', { name: '删除' + name, exact: true }); if (await button.count()) { await button.click(); await page.getByRole('button', { name: '确认删除', exact: true }).click(); await page.getByRole('dialog').waitFor({ state: 'hidden' }); } };
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  await page.goto('http://127.0.0.1:5173/#recruitment');
+  await page.reload();
+  await remove('验收测试临时记录');
+  await remove('验收临时拉新');
+  await create('新增拉新记录', '验收临时拉新', async d => { await d.getByLabel('状态', { exact: true }).selectOption('已确认'); await d.getByLabel('记录方向', { exact: true }).selectOption('新增'); await d.getByLabel('数量统计方式', { exact: true }).selectOption('exact'); await d.getByRole('spinbutton', { name: '数量', exact: true }).fill('2'); });
+  assert((await state()).workspace.rows.find(r => r.title === '验收临时拉新').count === 2, '新增拉新记录并持久化');
+  await page.reload();
+  await page.getByRole('button', { name: '编辑验收临时拉新', exact: true }).click();
+  await page.getByRole('dialog').getByRole('spinbutton', { name: '数量', exact: true }).fill('3'); await save();
+  await page.getByRole('textbox', { name: '搜索记录', exact: true }).fill('验收临时拉新');
+  assert(await page.locator('tbody tr').count() === 1, '搜索筛选只保留匹配行');
+  const csvPromise = page.waitForEvent('download'); await page.getByRole('button', { name: '导出 CSV', exact: true }).click(); const csv = await csvPromise; await csv.saveAs('output/playwright/filtered.csv');
+  await page.getByRole('textbox', { name: '搜索记录', exact: true }).fill('');
+  await nav('社群运营');
+  await create('新增社群档案', '验收临时社群');
+  await nav('活动与内容');
+  await create('新增活动', '验收临时活动', async d => { await d.getByLabel('关联社群', { exact: true }).selectOption({ label: '验收临时社群' }); });
+  await page.getByRole('button', { name: /^内容 \d+$/ }).click();
+  await create('新增内容', '验收临时内容', async d => { await d.getByLabel('关联活动', { exact: true }).selectOption({ label: '验收临时活动' }); await d.getByLabel('关联社群', { exact: true }).selectOption({ label: '验收临时社群' }); });
+  await nav('任务中心');
+  await create('新增任务', '验收临时任务');
+  await page.getByRole('combobox', { name: '任务状态：验收临时任务', exact: true }).selectOption('已完成');
+  assert((await state()).workspace.rows.find(r => r.title === '验收临时任务').status === '已完成', '任务看板状态变更');
+  await nav('成果与复盘');
+  await create('新增成果与复盘', '验收临时复盘', async d => { await d.getByLabel('关联记录', { exact: true }).selectOption({ label: '任务 · 验收临时任务' }); });
+  assert((await state()).workspace.rows.filter(r => r.title.startsWith('验收临时')).length === 6, '六类记录均可通过界面新增');
+  await nav('社群运营'); await remove('验收临时社群');
+  assert((await state()).workspace.rows.filter(r => r.title.startsWith('验收临时')).every(r => !r.groupId), '删除社群解除子记录引用');
+  await page.getByRole('button', { name: '数据中心', exact: true }).click();
+  const backupPromise = page.waitForEvent('download'); await page.getByRole('button', { name: '完整 JSON 备份', exact: true }).click(); const backup = await backupPromise; await backup.saveAs('output/playwright/backup.json');
+  await page.getByLabel('选择导入文件', { exact: true }).setInputFiles('output/playwright/backup.json');
+  assert((await page.getByText(/新增 0 条 · 更新 0 条 · 冲突 0 条/).count()) === 1, '完整备份重复导入保持幂等');
+  const imported = { type: 'wecom-candidates', version: 1, rows: [{ id: 'qa-wecom-candidate', kind: 'interactions', title: '验收临时企业微信候选', status: '待核实', source: '企业微信 CLI', sourceKey: 'qa:wecom:candidate', updatedAt: new Date().toISOString(), notes: '自动化验收临时数据，结束时删除。' }] };
+  await page.getByLabel('选择导入文件', { exact: true }).setInputFiles({ name: 'qa-candidates.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(imported)) });
+  await page.getByRole('button', { name: '确认合并导入', exact: true }).click();
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  assert((await state()).workspace.rows.find(r => r.id === 'qa-wecom-candidate').status === '待核实', '企业微信候选经预览后合并且保持待核实');
+  await nav('拉新管理');
+  await page.getByRole('button', { name: '编辑验收临时拉新', exact: true }).click();
+  const other = await page.context().newPage(); await other.goto('http://127.0.0.1:5173/#recruitment');
+  await other.getByRole('button', { name: '编辑验收临时拉新', exact: true }).click(); await other.getByRole('dialog').getByRole('textbox', { name: '说明 / 核验口径', exact: true }).fill('另一个窗口的最新内容'); await other.getByRole('button', { name: '保存记录', exact: true }).click(); await other.getByRole('dialog').waitFor({ state: 'hidden' });
+  await page.getByRole('dialog').getByRole('textbox', { name: '说明 / 核验口径', exact: true }).fill('旧窗口的草稿'); await page.getByRole('button', { name: '保存记录', exact: true }).click();
+  await page.getByRole('dialog').getByRole('alert').waitFor();
+  assert((await state()).workspace.rows.find(r => r.title === '验收临时拉新').notes === '另一个窗口的最新内容', '多窗口旧版本提交被拒绝且保留最新数据');
+  await page.getByRole('button', { name: '取消', exact: true }).click(); await other.close(); await page.getByRole('button', { name: '重新读取数据', exact: true }).click();
+  await remove('验收临时拉新');
+  await nav('社群运营'); await page.getByRole('button', { name: /^运营记录 \d+$/ }).click(); await remove('验收临时企业微信候选');
+  await nav('活动与内容'); await page.getByRole('button', { name: /^内容 \d+$/ }).click(); await remove('验收临时内容'); await page.getByRole('button', { name: /^活动 \d+$/ }).click(); await remove('验收临时活动');
+  await nav('任务中心'); await page.getByRole('button', { name: '列表', exact: true }).click(); await remove('验收临时任务');
+  await nav('成果与复盘'); await remove('验收临时复盘');
+  assert((await state()).workspace.rows.length === 8, '临时验收数据全部清理，保留原始记录');
+  // This is the isolated QA browser: remove the synthetic import timestamp after cleanup.
+  await page.evaluate(() => { const data = JSON.parse(localStorage.getItem('campus-console:workspace:v1')); data.workspace.lastImportAt = ''; data.revision++; localStorage.setItem('campus-console:workspace:v1', JSON.stringify(data)); });
+  await page.reload();
+  await nav('运营总览');
+  await page.locator('.toast').waitFor({ state: 'hidden' });
+  await page.screenshot({ path: 'output/playwright/overview-desktop.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(() => document.querySelector('.sidebar').getBoundingClientRect().right <= 1);
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), '390px 窄屏无页面横向溢出');
+  await page.screenshot({ path: 'output/playwright/overview-mobile.png', fullPage: true });
+  for (const name of ['拉新管理', '社群运营', '活动与内容', '任务中心', '成果与复盘', '运营总览']) { await nav(name); assert(await page.getByRole('heading', { level: 1 }).isVisible(), name + '在窄屏可导航'); }
+  return { passed: checks.length, checks };
+  } finally { await context.close(); }
+}

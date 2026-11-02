@@ -1,0 +1,4 @@
+{
+  "read": "auth != null && auth.uid == doc._openid",
+  "write": "auth != null && auth.uid == doc._openid && auth.uid == doc._id"
+}

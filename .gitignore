@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+.workbuddy/
+docs/WORKBUDDY-HANDOFF.md
+playwright-report/
+test-results/
+.wecom/
+*.local.json
+.playwright-cli/
+output/
+*.tsbuildinfo
+work/
+.playwright/*
+!.playwright/cli.config.json
