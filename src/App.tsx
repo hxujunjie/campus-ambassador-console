@@ -42,6 +42,41 @@ import {
 import { Badge, Modal } from "./components";
 import AgentAccess from "./AgentAccess";
 import {
+  GlobalSearch,
+  Pagination,
+  RecordListing,
+  RecordDrawer,
+  StatusChart,
+  ViewToolbar,
+} from "./WorkbenchViews";
+import {
+  aggregateChannels,
+  beijingDate,
+  BOARD_PAGE_SIZE,
+  dateRange,
+  DRAFT_KEY,
+  filterRows,
+  groupMonths,
+  initialView,
+  inPeriod,
+  MAX_RECORDS,
+  MAX_WORKSPACE_BYTES,
+  PAGE_SIZE,
+  parseSavedViews,
+  recordDate,
+  SAVED_VIEWS_KEY,
+  type SavedView,
+  type TimeMode,
+  type ViewState,
+} from "./workspace-views";
+import {
+  clearGitHubSession,
+  githubAuthorizationMessage,
+  rememberGitHubDevice,
+  remembersGitHubDevice,
+  type SaveReceipt,
+} from "./github-storage";
+import {
   calculate,
   countText,
   emptyRow,
@@ -160,6 +195,11 @@ export default function App() {
   const [user, setUser] = useState<string | null>(null);
   const [githubWriteAccess, setGitHubWriteAccess] = useState(!githubMode);
   const [githubTokenInput, setGitHubTokenInput] = useState("");
+  const [rememberDevice, setRememberDevice] = useState(false);
+  const [deviceRemembered, setDeviceRemembered] = useState(
+    remembersGitHubDevice,
+  );
+  const [lastReceipt, setLastReceipt] = useState<SaveReceipt | null>(null);
   const [githubAuthError, setGitHubAuthError] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
@@ -169,16 +209,42 @@ export default function App() {
   const [mobileNav, setMobileNav] = useState(false);
   const [dataOpen, setDataOpen] = useState(false);
   const [editor, setEditor] = useState<Row | null>(null);
+  const [detail, setDetail] = useState<Row | null>(null);
   const [deleting, setDeleting] = useState<Row | null>(null);
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState("");
-  const [source, setSource] = useState("");
-  const [direction, setDirection] = useState("");
-  const [start, setStart] = useState("");
-  const [end, setEnd] = useState("");
-  const [sort, setSort] = useState("updated");
-  const [kanban, setKanban] = useState(true);
-  const [dateFiltersOpen, setDateFiltersOpen] = useState(false);
+  const [views, setViews] = useState(
+    () =>
+      Object.fromEntries(kinds.map((k) => [k, initialView(k)])) as Record<
+        Kind,
+        ViewState
+      >,
+  );
+  const [savedViews, setSavedViews] = useState<SavedView[]>(() => {
+    try {
+      return parseSavedViews(localStorage.getItem(SAVED_VIEWS_KEY));
+    } catch {
+      return [];
+    }
+  });
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const [today, setToday] = useState(beijingDate);
+  const [overviewTime, setOverviewTime] = useState<TimeMode>("month");
+  const [overviewStart, setOverviewStart] = useState("");
+  const [overviewEnd, setOverviewEnd] = useState("");
+  const [boardLimits, setBoardLimits] = useState<Record<string, number>>({});
+  const scrollPositions = useRef<Record<string, number>>({});
+  const [draftNotice, setDraftNotice] = useState<Row | null>(() => {
+    try {
+      const data = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
+      if (!data?.row) return null;
+      const parsed = rowSchema.parse({
+        ...data.row,
+        title: data.row.title || "草稿",
+      });
+      return { ...parsed, title: data.row.title || "" };
+    } catch {
+      return null;
+    }
+  });
   const [changedElsewhere, setChangedElsewhere] = useState(false);
   const [importData, setImportData] = useState<unknown>(null);
   const [overwrite, setOverwrite] = useState(false);
@@ -200,6 +266,23 @@ export default function App() {
           : page === "reviews"
             ? "reviews"
             : "tasks";
+  const view = views[kind];
+  const { query, status: filter, source, direction, sort } = view;
+  const { start, end } = dateRange(view.timeMode, today, view.start, view.end);
+  const kanban = view.layout === "board";
+  function updateView(change: Partial<ViewState>) {
+    setViews((current) => ({
+      ...current,
+      [kind]: { ...current[kind], ...change, page: change.page ?? 1 },
+    }));
+  }
+  const setQuery = (query: string) => updateView({ query });
+  const setFilter = (status: string) => updateView({ status });
+  const setSource = (source: string) => updateView({ source });
+  const setDirection = (direction: string) => updateView({ direction });
+  const setSort = (sort: string) => updateView({ sort });
+  const setKanban = (board: boolean) =>
+    updateView({ layout: board ? "board" : "table" });
   const rows = workspace?.rows ?? [];
   const latestWecomFetch = rows
     .filter((r) => r.source === "企业微信 CLI")
@@ -208,30 +291,62 @@ export default function App() {
     .at(-1);
   const metrics = useMemo(() => calculate(rows), [rows]);
   const filtered = useMemo(
-    () =>
-      rows
-        .filter(
-          (r) =>
-            r.kind === kind &&
-            (!query ||
-              `${r.title} ${r.notes} ${r.channel} ${r.category}`
-                .toLowerCase()
-                .includes(query.toLowerCase())) &&
-            (!filter || r.status === filter) &&
-            (!source || r.source === source) &&
-            (!direction || r.direction === direction) &&
-            (!start || (!!r.date && r.date >= start)) &&
-            (!end || (!!r.date && r.date <= end)),
-        )
-        .sort((a, b) =>
-          sort === "title"
-            ? a.title.localeCompare(b.title, "zh")
-            : sort === "date"
-              ? b.date.localeCompare(a.date)
-              : b.updatedAt.localeCompare(a.updatedAt),
-        ),
-    [rows, kind, query, filter, source, direction, start, end, sort],
+    () => filterRows(rows, kind, view, today),
+    [rows, kind, view, today],
   );
+  const ordered = useMemo(
+    () =>
+      view.groupByMonth
+        ? groupMonths(filtered).flatMap(([, records]) => records)
+        : filtered,
+    [filtered, view.groupByMonth],
+  );
+  const currentPage = Math.min(
+    view.page,
+    Math.max(1, Math.ceil(ordered.length / PAGE_SIZE)),
+  );
+  const pageRows = ordered.slice(
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE,
+  );
+  const months = useMemo(
+    () =>
+      [
+        ...new Set(
+          rows
+            .filter((r) => r.kind === kind)
+            .map((r) => recordDate(r).slice(0, 7))
+            .filter(Boolean),
+        ),
+      ]
+        .sort()
+        .reverse(),
+    [rows, kind],
+  );
+  const overviewRange = dateRange(
+    overviewTime,
+    today,
+    overviewStart,
+    overviewEnd,
+  );
+  const periodRows = useMemo(
+    () =>
+      rows.filter((r) =>
+        inPeriod(r.date, overviewRange, overviewTime === "undated"),
+      ),
+    [rows, overviewRange.start, overviewRange.end, overviewTime],
+  );
+  const periodMetrics = useMemo(() => calculate(periodRows), [periodRows]);
+  const workspaceBytes = workspace
+    ? new TextEncoder().encode(JSON.stringify(workspace)).length
+    : 0;
+  const capacity = Math.max(
+    rows.length / MAX_RECORDS,
+    workspaceBytes / MAX_WORKSPACE_BYTES,
+  );
+  const detailRow = detail
+    ? (rows.find((r) => r.id === detail.id) ?? null)
+    : null;
   const importPlan = useMemo<{ plan?: ImportPlan; error?: string }>(() => {
     if (!workspace || !importData) return {};
     try {
@@ -247,6 +362,10 @@ export default function App() {
     try {
       const u = await currentUser();
       setUser(u);
+      if (githubMode) {
+        setDeviceRemembered(remembersGitHubDevice());
+        setGitHubAuthError(githubAuthorizationMessage());
+      }
       if (u || githubMode) {
         setSnapshot(await loadWorkspace());
         setGitHubWriteAccess(!githubMode || (!!u && hasGitHubWriteAccess()));
@@ -267,6 +386,36 @@ export default function App() {
     void reload();
   }, []);
   useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setGlobalSearchOpen((open) => !open);
+      }
+    };
+    const onFocus = () => setToday(beijingDate());
+    const onAuthorization = (event: StorageEvent) => {
+      if (
+        event.key === "campus-console:github-edit-token:v1" ||
+        event.key === null
+      ) {
+        clearGitHubSession();
+        setDeviceRemembered(remembersGitHubDevice());
+        setGitHubWriteAccess(false);
+        setUser(null);
+      }
+    };
+    const timer = setInterval(onFocus, 60000);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("storage", onAuthorization);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("storage", onAuthorization);
+    };
+  }, []);
+  useEffect(() => {
     const handle = () => {
       const hash = location.hash.slice(1);
       if (pages.some((p) => p.id === hash)) setPage(hash as Page);
@@ -275,8 +424,27 @@ export default function App() {
     return () => window.removeEventListener("hashchange", handle);
   }, []);
   useEffect(() => {
-    window.scrollTo(0, 0);
-  }, [page]);
+    const frame = requestAnimationFrame(() =>
+      window.scrollTo(0, scrollPositions.current[`${page}:${kind}`] ?? 0),
+    );
+    return () => cancelAnimationFrame(frame);
+  }, [page, kind]);
+  useEffect(() => {
+    setBoardLimits({});
+  }, [
+    kind,
+    view.query,
+    view.status,
+    view.source,
+    view.direction,
+    view.channel,
+    view.attribution,
+    view.preset,
+    view.timeMode,
+    view.start,
+    view.end,
+    view.sort,
+  ]);
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(""), 4500);
@@ -288,33 +456,99 @@ export default function App() {
       if (event.key === LOCAL_KEY) setChangedElsewhere(true);
     };
     window.addEventListener("storage", storage);
-    const timer = cloudMode || githubMode
-      ? setInterval(async () => {
-          if (document.visibilityState !== "visible" || saving.current) return;
-          try {
-            const remote = await loadWorkspace();
-            if (remote.revision !== snapshot.revision)
-              setChangedElsewhere(true);
-          } catch {
-            /* Explicit refresh exposes actionable errors without disrupting a draft. */
-          }
-        }, 30000)
-      : undefined;
+    const timer =
+      cloudMode || githubMode
+        ? setInterval(async () => {
+            if (document.visibilityState !== "visible" || saving.current)
+              return;
+            try {
+              const remote = await loadWorkspace();
+              if (remote.revision !== snapshot.revision)
+                setChangedElsewhere(true);
+            } catch {
+              /* Explicit refresh exposes actionable errors without disrupting a draft. */
+            }
+          }, 30000)
+        : undefined;
     return () => {
       window.removeEventListener("storage", storage);
       clearInterval(timer);
     };
   }, [snapshot, user]);
   function navigate(next: Page) {
+    scrollPositions.current[`${page}:${kind}`] = window.scrollY;
     setPage(next);
     location.hash = next;
-    setQuery("");
-    setFilter("");
-    setSource("");
-    setDirection("");
-    setStart("");
-    setEnd("");
     setMobileNav(false);
+  }
+  function openDetail(row: Row) {
+    setDetail(row);
+  }
+  function saveView(name: string) {
+    if (
+      savedViews.length >= 40 &&
+      !savedViews.some((entry) => entry.kind === kind && entry.name === name)
+    )
+      return false;
+    const next = [
+      ...savedViews.filter(
+        (entry) => !(entry.kind === kind && entry.name === name),
+      ),
+      { ...view, id: crypto.randomUUID(), kind, name, page: 1 },
+    ];
+    try {
+      localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(next));
+      setSavedViews(next);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  function removeView(id: string) {
+    const next = savedViews.filter((entry) => entry.id !== id);
+    try {
+      localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(next));
+      setSavedViews(next);
+    } catch {
+      setError("视图设置未能保存，请检查浏览器存储空间。");
+    }
+  }
+  function selectStatus(target: Page, targetKind: Kind, status: string) {
+    navigate(target);
+    setTab(targetKind);
+    setViews((current) => ({
+      ...current,
+      [targetKind]: { ...initialView(targetKind), preset: "", status },
+    }));
+  }
+  function selectChannel(channel: string, attribution: string) {
+    navigate("recruitment");
+    setViews((current) => ({
+      ...current,
+      recruitment: {
+        ...initialView("recruitment"),
+        channel,
+        attribution,
+        exactOnly: true,
+        direction: "新增",
+        status: "已确认",
+        timeMode: overviewTime,
+        start: overviewStart,
+        end: overviewEnd,
+      },
+    }));
+  }
+  function rememberDraft(row: Row) {
+    setDraftNotice(row);
+  }
+  function discardDraft() {
+    try {
+      localStorage.removeItem(DRAFT_KEY);
+    } catch {
+      setError("草稿清除失败，请检查浏览器存储权限。");
+      return;
+    }
+    setDraftNotice(null);
   }
   async function commit(next: Workspace): Promise<Snapshot | null> {
     if (!snapshot || saving.current) return null;
@@ -326,12 +560,14 @@ export default function App() {
     saving.current = true;
     setBusy(true);
     setError("");
+    setLastReceipt(null);
     try {
       const saved = await saveWorkspace(
         { ...next, updatedAt: new Date().toISOString() },
         snapshot.revision,
       );
       setSnapshot(saved);
+      setLastReceipt(saved.receipt ?? null);
       setChangedElsewhere(false);
       return saved;
     } catch (e) {
@@ -352,16 +588,22 @@ export default function App() {
       setToast("连接 GitHub 编辑权限后即可修改记录");
       return;
     }
-    setEditor(row);
+    if (draftNotice && draftNotice.id !== row.id) {
+      setError("还有一份未保存草稿，请先恢复、导出或放弃草稿。");
+      return;
+    }
+    setError("");
+    setEditor(draftNotice?.id === row.id ? draftNotice : row);
   }
   async function enableGitHubEditing() {
     setBusy(true);
     setGitHubAuthError("");
     try {
-      const account = await connectGitHub(githubTokenInput);
+      const account = await connectGitHub(githubTokenInput, rememberDevice);
       setGitHubTokenInput("");
       setUser(account);
       setGitHubWriteAccess(true);
+      setDeviceRemembered(remembersGitHubDevice());
       await reload();
       setToast("GitHub 编辑权限已连接");
     } catch (e) {
@@ -376,6 +618,7 @@ export default function App() {
       ? rows.map((r) => (r.id === row.id ? row : r))
       : [...rows, row];
     if (await commit({ ...workspace, rows: nextRows })) {
+      discardDraft();
       setEditor(null);
       setToast("记录已保存");
     }
@@ -490,7 +733,7 @@ export default function App() {
           <span className="workspace-avatar">许</span>
           <div>
             <strong>我的运营空间</strong>
-            <span>个人工作区 · V1.0</span>
+            <span>个人工作区 · V1.3</span>
           </div>
           <ChevronRight size={14} />
         </div>
@@ -526,8 +769,14 @@ export default function App() {
             <ArrowUpRight size={14} />
           </button>
           <div className="sidebar-footer">
-            <span className={`status-dot ${cloudMode || githubMode ? "" : "local"}`} />
-            {githubMode ? "GitHub 公共数据模式" : cloudMode ? "CloudBase 云端模式" : "本地开发模式"}
+            <span
+              className={`status-dot ${cloudMode || githubMode ? "" : "local"}`}
+            />
+            {githubMode
+              ? "GitHub 公共数据模式"
+              : cloudMode
+                ? "CloudBase 云端模式"
+                : "本地开发模式"}
           </div>
         </div>
       </aside>
@@ -548,9 +797,26 @@ export default function App() {
             <strong>{activePage.title}</strong>
           </div>
           <div className="top-actions">
+            <button
+              className="btn subtle global-search-trigger"
+              aria-label="搜索全部记录"
+              onClick={() => setGlobalSearchOpen(true)}
+            >
+              <Search size={16} />
+              <span>搜索</span>
+              <kbd>Ctrl K</kbd>
+            </button>
             <span className="save-label">
               <span className="status-dot" />
-              {busy ? "正在处理" : githubMode ? githubWriteAccess ? "已同步到 GitHub" : "GitHub 公开只读" : cloudMode ? "云端保存" : "本地已保存"}
+              {busy
+                ? "正在处理"
+                : githubMode
+                  ? githubWriteAccess
+                    ? "已同步到 GitHub"
+                    : "GitHub 公开只读"
+                  : cloudMode
+                    ? "云端保存"
+                    : "本地已保存"}
             </span>
             <button
               className="icon-btn"
@@ -586,11 +852,74 @@ export default function App() {
               </button>
             </div>
           )}
+          {draftNotice && !editor && (
+            <div className="banner amber" role="status">
+              <FileText size={18} />
+              <span>有一份未保存草稿 {draftNotice.title || "新记录"}</span>
+              <button
+                className="text-button"
+                disabled={busy || (githubMode && !githubWriteAccess)}
+                onClick={() => openEditor(draftNotice)}
+              >
+                恢复草稿
+              </button>
+              <button
+                className="text-button"
+                onClick={() =>
+                  download(
+                    "工作台_未保存草稿.json",
+                    JSON.stringify(draftNotice, null, 2),
+                  )
+                }
+              >
+                导出草稿
+              </button>
+              <button className="text-button" onClick={discardDraft}>
+                放弃草稿
+              </button>
+            </div>
+          )}
+          {capacity >= 0.8 && (
+            <div className="banner amber">
+              <Database size={18} />
+              <span>
+                工作区已使用 {Math.round(capacity * 100)}%
+                容量，请在数据中心查看并备份。
+              </span>
+              <button className="text-button" onClick={() => setDataOpen(true)}>
+                查看容量
+              </button>
+            </div>
+          )}
+          {lastReceipt && (
+            <div
+              className={`banner ${lastReceipt.verified ? "" : "amber"}`}
+              role="status"
+            >
+              <ShieldCheck size={18} />
+              <span>{lastReceipt.message}</span>
+              {lastReceipt.commitUrl && (
+                <a
+                  className="text-button"
+                  href={lastReceipt.commitUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  查看提交回执 <ArrowUpRight size={14} />
+                </a>
+              )}
+            </div>
+          )}
           {githubMode && !githubWriteAccess && (
             <div className="banner amber">
               <ShieldCheck size={18} />
-              <span>所有人都可以查看公开数据。连接工作台指定的 GitHub 编辑权限后，才能保存修改。</span>
-              <button className="text-button" onClick={() => setDataOpen(true)}>连接编辑权限</button>
+              <span>
+                所有人都可以查看公开数据。连接工作台指定的 GitHub
+                编辑权限后，才能保存修改。
+              </span>
+              <button className="text-button" onClick={() => setDataOpen(true)}>
+                连接编辑权限
+              </button>
             </div>
           )}
           {changedElsewhere && (
@@ -613,7 +942,7 @@ export default function App() {
               <div className="eyebrow">CAMPUS AMBASSADOR / WORKSPACE</div>
               <h1>
                 {activePage.title}
-                <span className="version">V1.0</span>
+                <span className="version">V1.3</span>
               </h1>
               <p>{activePage.subtitle}</p>
             </div>
@@ -626,7 +955,9 @@ export default function App() {
                   </button>
                   <button
                     className="btn primary"
-                    onClick={() => openEditor({ ...emptyRow("recruitment"), title: "" })}
+                    onClick={() =>
+                      openEditor({ ...emptyRow("recruitment"), title: "" })
+                    }
                     disabled={githubMode && !githubWriteAccess}
                   >
                     <Plus size={17} />
@@ -701,10 +1032,76 @@ export default function App() {
                   </div>
                 </div>
               </section>
+              <section className="period-controls" aria-label="运营统计期间">
+                <div>
+                  <h2>选定期间的运营记录</h2>
+                  <p>
+                    {overviewTime === "all"
+                      ? "全部已记录期间"
+                      : `${overviewRange.start || "不限"} 至 ${overviewRange.end || "不限"}`}{" "}
+                    · 按记录日期
+                  </p>
+                </div>
+                <select
+                  aria-label="总览时间范围"
+                  value={overviewTime}
+                  onChange={(event) =>
+                    setOverviewTime(event.target.value as TimeMode)
+                  }
+                >
+                  <option value="month">本月</option>
+                  <option value="lastMonth">上月</option>
+                  <option value="week">本周</option>
+                  <option value="all">全部期间</option>
+                  <option value="custom">自定义期间</option>
+                </select>
+                {overviewTime === "custom" && (
+                  <>
+                    <input
+                      aria-label="总览起始日期"
+                      type="date"
+                      value={overviewStart}
+                      onChange={(event) => setOverviewStart(event.target.value)}
+                    />
+                    <span>至</span>
+                    <input
+                      aria-label="总览结束日期"
+                      type="date"
+                      value={overviewEnd}
+                      onChange={(event) => setOverviewEnd(event.target.value)}
+                    />
+                  </>
+                )}
+                {overviewTime !== "all" &&
+                  rows.some(
+                    (row) => row.kind === "recruitment" && !row.date,
+                  ) && (
+                    <button
+                      className="text-button"
+                      onClick={() => {
+                        navigate("recruitment");
+                        setViews((current) => ({
+                          ...current,
+                          recruitment: {
+                            ...initialView("recruitment"),
+                            timeMode: "undated",
+                          },
+                        }));
+                      }}
+                    >
+                      {
+                        rows.filter(
+                          (row) => row.kind === "recruitment" && !row.date,
+                        ).length
+                      }{" "}
+                      条拉新记录日期待补充
+                    </button>
+                  )}
+              </section>
               <div className="metric-grid">
                 <Metric
                   title="已确认渠道新增记录"
-                  value={metrics.channelCount}
+                  value={periodMetrics.channelCount}
                   unit="人次"
                   note="非团队口径 · 未跨渠道去重"
                   icon={<UserPlus size={20} />}
@@ -712,7 +1109,7 @@ export default function App() {
                 />
                 <Metric
                   title="团队共同邀请记录"
-                  value={metrics.teamCount}
+                  value={periodMetrics.teamCount}
                   unit="人次"
                   note="团队成果 · 不计为个人独立成果"
                   icon={<Users size={20} />}
@@ -720,17 +1117,17 @@ export default function App() {
                 />
                 <Metric
                   title="已确认成员退出记录"
-                  value={metrics.exits}
+                  value={periodMetrics.exits}
                   unit="人次"
                   note="退出单列 · 不用于推算群净增长"
                   icon={<ArrowUpRight size={20} />}
                   color="orange"
                 />
                 <Metric
-                  title="群成员数合计"
+                  title="当前群成员数合计"
                   value={metrics.groupCount ?? "待补充"}
                   unit={metrics.groupCount !== null ? "人次" : ""}
-                  note="各群实测数之和 · 非去重总人数"
+                  note="截至当前 · 以实测日期为准"
                   icon={<ShieldCheck size={20} />}
                   color="teal"
                 />
@@ -759,11 +1156,11 @@ export default function App() {
                       团队共同成果
                     </span>
                   </div>
-                  <GrowthChart rows={rows} />
+                  <GrowthChart rows={periodRows} onSelect={selectChannel} />
                   <div className="chart-foot">
                     <CircleHelp size={14} />
                     {
-                      rows.filter(
+                      periodRows.filter(
                         (r) =>
                           r.kind === "recruitment" &&
                           r.direction === "新增" &&
@@ -776,7 +1173,7 @@ export default function App() {
                 <section className="panel todo-panel">
                   <PanelHeader
                     title="接下来做什么"
-                    sub={`${metrics.openTasks.length} 项待推进 · ${metrics.overdue.length} 项逾期`}
+                    sub={`截至当前 · ${metrics.openTasks.length} 项待推进 · ${metrics.overdue.length} 项逾期`}
                     action={
                       <button
                         className="text-button"
@@ -788,28 +1185,40 @@ export default function App() {
                   />
                   {metrics.openTasks.length ? (
                     <div className="task-preview-list">
-                      {metrics.openTasks.slice(0, 4).map((t) => (
-                        <div className="task-preview" key={t.id}>
-                          <button
-                            className="task-checkbox"
-                            aria-label={`完成任务：${t.title}`}
-                            disabled={busy || (githubMode && !githubWriteAccess)}
-                            onClick={() => changeTask(t, "已完成")}
-                          />
-                          <button
-                            className="task-preview-text"
-                            onClick={() => openEditor(t)}
-                          >
-                            <strong>{t.title}</strong>
-                            <span>
-                              {t.dueDate || "未设截止日期"} · {t.source}
-                            </span>
-                          </button>
-                          {t.priority === "高" && (
-                            <span className="priority-mark">高</span>
-                          )}
-                        </div>
-                      ))}
+                      {[...metrics.openTasks]
+                        .sort(
+                          (a, b) =>
+                            (a.priority === "高" ? 0 : 1) -
+                              (b.priority === "高" ? 0 : 1) ||
+                            (a.dueDate || "9999").localeCompare(
+                              b.dueDate || "9999",
+                            ),
+                        )
+                        .slice(0, 3)
+                        .map((t) => (
+                          <div className="task-preview" key={t.id}>
+                            <button
+                              className="task-checkbox"
+                              aria-label={`完成任务：${t.title}`}
+                              disabled={
+                                busy || (githubMode && !githubWriteAccess)
+                              }
+                              onClick={() => changeTask(t, "已完成")}
+                            />
+                            <button
+                              className="task-preview-text"
+                              onClick={() => openDetail(t)}
+                            >
+                              <strong>{t.title}</strong>
+                              <span>
+                                {t.dueDate || "未设截止日期"} · {t.source}
+                              </span>
+                            </button>
+                            {t.priority === "高" && (
+                              <span className="priority-mark">高</span>
+                            )}
+                          </div>
+                        ))}
                     </div>
                   ) : (
                     <div className="empty compact">
@@ -819,13 +1228,31 @@ export default function App() {
                   )}
                   <button
                     className="add-inline"
-                    onClick={() => openEditor({ ...emptyRow("tasks"), title: "" })}
+                    onClick={() =>
+                      openEditor({ ...emptyRow("tasks"), title: "" })
+                    }
                     disabled={githubMode && !githubWriteAccess}
                   >
                     <Plus size={16} />
                     添加一个下一步
                   </button>
                 </section>
+              </div>
+              <div className="dashboard-grid current-state-charts">
+                <StatusChart
+                  title="当前任务进展"
+                  rows={rows.filter((row) => row.kind === "tasks")}
+                  statuses={["待办", "进行中", "已完成", "已取消"]}
+                  onSelect={(status) => selectStatus("tasks", "tasks", status)}
+                />
+                <StatusChart
+                  title="当前内容进展"
+                  rows={rows.filter((row) => row.kind === "content")}
+                  statuses={["待办", "进行中", "待核实", "已发布"]}
+                  onSelect={(status) =>
+                    selectStatus("activity", "content", status)
+                  }
+                />
               </div>
               <div className="dashboard-bottom">
                 <section className="panel">
@@ -843,7 +1270,7 @@ export default function App() {
                       .filter((r) => ["待核实", "未量化"].includes(r.status))
                       .slice(0, 4)
                       .map((r) => (
-                        <button key={r.id} onClick={() => openEditor(r)}>
+                        <button key={r.id} onClick={() => openDetail(r)}>
                           <span className="verification-icon">
                             <CircleHelp size={17} />
                           </span>
@@ -868,13 +1295,31 @@ export default function App() {
                     </div>
                     <div>
                       <strong>
-                        {githubMode ? "GitHub 公开数据文件" : cloudMode ? "CloudBase 云端数据库" : "浏览器本地工作区"}
+                        {githubMode
+                          ? "GitHub 公开数据文件"
+                          : cloudMode
+                            ? "CloudBase 云端数据库"
+                            : "浏览器本地工作区"}
                       </strong>
                       <span>
-                        {githubMode ? "所有人可读 · 指定 GitHub 账号可写" : cloudMode ? "同一账号跨设备读取 · 版本冲突保护" : "当前浏览器保存 · 可导出完整备份"}
+                        {githubMode
+                          ? "所有人可读 · 指定 GitHub 账号可写"
+                          : cloudMode
+                            ? "同一账号跨设备读取 · 版本冲突保护"
+                            : "当前浏览器保存 · 可导出完整备份"}
                       </span>
                     </div>
-                    <Badge value={githubMode ? githubWriteAccess ? "已授权" : "公开" : cloudMode ? "已连接" : "本地"} />
+                    <Badge
+                      value={
+                        githubMode
+                          ? githubWriteAccess
+                            ? "已授权"
+                            : "公开"
+                          : cloudMode
+                            ? "已连接"
+                            : "本地"
+                      }
+                    />
                   </div>
                   <div className="source-line">
                     <div className="source-logo greenish">
@@ -941,9 +1386,9 @@ export default function App() {
                       <button
                         className={kind === k ? "selected" : ""}
                         onClick={() => {
+                          scrollPositions.current[`${page}:${kind}`] =
+                            window.scrollY;
                           setTab(k);
-                          setQuery("");
-                          setFilter("");
                         }}
                         key={k}
                       >
@@ -953,6 +1398,17 @@ export default function App() {
                     ))}
                   </div>
                 )}
+                <ViewToolbar
+                  key={kind}
+                  kind={kind}
+                  view={view}
+                  today={today}
+                  months={months}
+                  saved={savedViews.filter((entry) => entry.kind === kind)}
+                  onChange={updateView}
+                  onSave={saveView}
+                  onRemove={removeView}
+                />
                 <div
                   className={`filters${page === "tasks" ? " task-filters" : ""}`}
                 >
@@ -1008,77 +1464,33 @@ export default function App() {
                     <option value="date">记录日期</option>
                     <option value="title">名称排序</option>
                   </select>
-                  {page === "tasks" && (
-                    <>
+                  <div className="task-view-toolbar record-view-toggle">
+                    <div className="segmented">
+                      {kind === "tasks" && (
+                        <button
+                          className={kanban ? "selected" : ""}
+                          onClick={() => setKanban(true)}
+                        >
+                          看板
+                        </button>
+                      )}
                       <button
-                        className={`btn filter-toggle${dateFiltersOpen || start || end ? " selected" : ""}`}
-                        aria-expanded={dateFiltersOpen || !!start || !!end}
-                        onClick={() => setDateFiltersOpen((v) => !v)}
+                        className={view.layout === "table" ? "selected" : ""}
+                        onClick={() => updateView({ layout: "table" })}
                       >
-                        <CalendarDays size={14} />
-                        日期筛选
+                        列表
                       </button>
-                      <div className="task-view-toolbar">
-                        <div className="segmented">
-                          <button
-                            className={kanban ? "selected" : ""}
-                            onClick={() => setKanban(true)}
-                          >
-                            看板
-                          </button>
-                          <button
-                            className={!kanban ? "selected" : ""}
-                            onClick={() => setKanban(false)}
-                          >
-                            列表
-                          </button>
-                        </div>
-                      </div>
-                    </>
-                  )}
-                </div>
-                {(page !== "tasks" || dateFiltersOpen || start || end) && (
-                  <div className="date-filters">
-                    <span>记录日期</span>
-                    <input
-                      aria-label="起始日期"
-                      type="date"
-                      value={start}
-                      onChange={(e) => setStart(e.target.value)}
-                    />
-                    <span>至</span>
-                    <input
-                      aria-label="结束日期"
-                      type="date"
-                      value={end}
-                      onChange={(e) => setEnd(e.target.value)}
-                    />
-                    {(query ||
-                      filter ||
-                      source ||
-                      start ||
-                      end ||
-                      direction) && (
-                      <button
-                        className="text-button"
-                        onClick={() => {
-                          setQuery("");
-                          setFilter("");
-                          setSource("");
-                          setStart("");
-                          setEnd("");
-                          setDirection("");
-                        }}
-                      >
-                        清除筛选
-                      </button>
-                    )}
-                    <span className="result-count">
-                      共 {filtered.length} 条记录
-                      {(start || end) && " · 未填日期的记录已排除"}
-                    </span>
+                      {kind !== "tasks" && (
+                        <button
+                          className={view.layout === "cards" ? "selected" : ""}
+                          onClick={() => updateView({ layout: "cards" })}
+                        >
+                          卡片
+                        </button>
+                      )}
+                    </div>
                   </div>
-                )}
+                </div>
                 {filtered.length === 0 ? (
                   <Empty
                     kind={kind}
@@ -1117,72 +1529,99 @@ export default function App() {
                             aria-label={`${s}任务`}
                             tabIndex={column.length ? 0 : undefined}
                           >
-                            {column.map((t) => (
-                              <article className="task-card" key={t.id}>
-                                <div className="task-card-top">
-                                  <button
-                                    className="task-card-title"
-                                    onClick={() => openEditor(t)}
-                                    title={t.title}
-                                  >
-                                    {t.title}
-                                  </button>
-                                  <button
-                                    className="icon-btn"
-                                    aria-label={`编辑${t.title}`}
-                                    onClick={() => openEditor(t)}
-                                  >
-                                    <Pencil size={14} />
-                                  </button>
-                                </div>
-                                <p title={t.notes}>{t.notes || "暂无说明"}</p>
-                                <div className="task-card-footer">
-                                  <div className="task-card-meta">
-                                    <Badge value={t.priority} />
-                                    {t.relatedId && (
-                                      <span className="relation">
-                                        <Link2 size={12} />
-                                        {
-                                          rows.find((r) => r.id === t.relatedId)
-                                            ?.title
-                                        }
-                                      </span>
-                                    )}
-                                    {(t.dueDate || !t.relatedId) && (
-                                      <span>{t.dueDate || "未设截止日期"}</span>
-                                    )}
+                            {column
+                              .slice(0, boardLimits[s] ?? BOARD_PAGE_SIZE)
+                              .map((t) => (
+                                <article className="task-card" key={t.id}>
+                                  <div className="task-card-top">
+                                    <button
+                                      className="task-card-title"
+                                      onClick={() => openDetail(t)}
+                                      title={t.title}
+                                    >
+                                      {t.title}
+                                    </button>
+                                    <button
+                                      className="icon-btn"
+                                      aria-label={`编辑${t.title}`}
+                                      onClick={() => openDetail(t)}
+                                    >
+                                      <Pencil size={14} />
+                                    </button>
                                   </div>
-                                  <select
-                                    aria-label={`任务状态：${t.title}`}
-                                    value={t.status}
-                                    disabled={busy || (githubMode && !githubWriteAccess)}
-                                    onChange={(e) =>
-                                      changeTask(
-                                        t,
-                                        e.target.value as Row["status"],
-                                      )
-                                    }
-                                  >
-                                    {[
-                                      "待办",
-                                      "进行中",
-                                      "已完成",
-                                      "已取消",
-                                      ...(![
+                                  <p title={t.notes}>{t.notes || "暂无说明"}</p>
+                                  <div className="task-card-footer">
+                                    <div className="task-card-meta">
+                                      <Badge value={t.priority} />
+                                      {t.relatedId && (
+                                        <span className="relation">
+                                          <Link2 size={12} />
+                                          {
+                                            rows.find(
+                                              (r) => r.id === t.relatedId,
+                                            )?.title
+                                          }
+                                        </span>
+                                      )}
+                                      {(t.dueDate || !t.relatedId) && (
+                                        <span>
+                                          {t.dueDate || "未设截止日期"}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <select
+                                      aria-label={`任务状态：${t.title}`}
+                                      value={t.status}
+                                      disabled={
+                                        busy ||
+                                        (githubMode && !githubWriteAccess)
+                                      }
+                                      onChange={(e) =>
+                                        changeTask(
+                                          t,
+                                          e.target.value as Row["status"],
+                                        )
+                                      }
+                                    >
+                                      {[
                                         "待办",
                                         "进行中",
                                         "已完成",
                                         "已取消",
-                                      ].includes(t.status)
-                                        ? [t.status]
-                                        : []),
-                                    ].map((v) => (
-                                      <option key={v}>{v}</option>
-                                    ))}
-                                  </select>
-                                </div>
-                              </article>
-                            ))}
+                                        ...(![
+                                          "待办",
+                                          "进行中",
+                                          "已完成",
+                                          "已取消",
+                                        ].includes(t.status)
+                                          ? [t.status]
+                                          : []),
+                                      ].map((v) => (
+                                        <option key={v}>{v}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                </article>
+                              ))}
+                            {column.length >
+                              (boardLimits[s] ?? BOARD_PAGE_SIZE) && (
+                              <button
+                                className="btn load-more"
+                                onClick={() =>
+                                  setBoardLimits((current) => ({
+                                    ...current,
+                                    [s]:
+                                      (current[s] ?? BOARD_PAGE_SIZE) +
+                                      BOARD_PAGE_SIZE,
+                                  }))
+                                }
+                              >
+                                继续加载 · 还有{" "}
+                                {column.length -
+                                  (boardLimits[s] ?? BOARD_PAGE_SIZE)}{" "}
+                                项
+                              </button>
+                            )}
                             {column.length === 0 && (
                               <div className="kanban-empty">
                                 <span>
@@ -1204,158 +1643,36 @@ export default function App() {
                     })}
                   </div>
                 ) : (
-                  <div className="table-scroll">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>名称 / 说明</th>
-                          {kind === "recruitment" ? (
-                            <>
-                              <th>渠道 / 方向</th>
-                              <th>数量</th>
-                              <th>成果归属</th>
-                            </>
-                          ) : (
-                            <>
-                              <th>类型 / 优先级</th>
-                              <th>
-                                {kind === "communities"
-                                  ? "实测成员数"
-                                  : "关联社群 / 活动"}
-                              </th>
-                            </>
-                          )}
-                          <th>状态</th>
-                          <th>{kind === "tasks" ? "截止日期" : "记录日期"}</th>
-                          <th>来源</th>
-                          <th className="actions-column">操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filtered.map((r) => (
-                          <tr key={r.id}>
-                            <td>
-                              <button
-                                className="row-title"
-                                onClick={() => openEditor(r)}
-                              >
-                                {r.title}
-                              </button>
-                              <p className="row-notes" title={r.notes}>
-                                {r.notes || "暂无说明"}
-                              </p>
-                              {r.evidence && (
-                                <a
-                                  className="evidence-link"
-                                  href={r.evidence}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  <Link2 size={12} />
-                                  查看证据
-                                </a>
-                              )}
-                              {r.attachment && (
-                                <button
-                                  className="text-button evidence-link"
-                                  onClick={async () => {
-                                    try {
-                                      window.open(
-                                        await attachmentURL(r.attachment),
-                                        "_blank",
-                                        "noopener,noreferrer",
-                                      );
-                                    } catch (e) {
-                                      setError(readableError(e));
-                                    }
-                                  }}
-                                >
-                                  <FolderOpen size={12} />
-                                  附件
-                                </button>
-                              )}
-                            </td>
-                            {kind === "recruitment" ? (
-                              <>
-                                <td>
-                                  {r.channel || "—"}
-                                  <small className="cell-sub">
-                                    {r.direction}
-                                  </small>
-                                </td>
-                                <td className="count-cell">{countText(r)}</td>
-                                <td>
-                                  <span
-                                    className={
-                                      r.attribution === "团队" ? "team-tag" : ""
-                                    }
-                                  >
-                                    {r.attribution}
-                                  </span>
-                                </td>
-                              </>
-                            ) : (
-                              <>
-                                <td>
-                                  {kind === "tasks" ? (
-                                    <Badge value={r.priority} />
-                                  ) : (
-                                    r.category || "未分类"
-                                  )}
-                                </td>
-                                <td>
-                                  {kind === "communities"
-                                    ? countText(r)
-                                    : rows.find(
-                                        (v) =>
-                                          v.id ===
-                                          (r.groupId ||
-                                            r.activityId ||
-                                            r.relatedId),
-                                      )?.title || "未关联"}
-                                </td>
-                              </>
-                            )}
-                            <td>
-                              <Badge value={r.status} />
-                            </td>
-                            <td className="nowrap">
-                              {(kind === "tasks" ? r.dueDate : r.date) || (
-                                <span className="muted">未提供</span>
-                              )}
-                            </td>
-                            <td className="nowrap">
-                              <span className="source-tag">{r.source}</span>
-                            </td>
-                            <td>
-                              <div className="row-actions">
-                                <button
-                                  className="icon-btn"
-                                  aria-label={`编辑${r.title}`}
-                                  onClick={() => openEditor(r)}
-                                >
-                                  <Pencil size={15} />
-                                </button>
-                                <button
-                                  className="icon-btn danger"
-                                  aria-label={`删除${r.title}`}
-                                  onClick={() => {
-                                    if (githubMode && !githubWriteAccess) {
-                                      setDataOpen(true);
-                                      setToast("连接 GitHub 编辑权限后即可删除记录");
-                                    } else setDeleting(r);
-                                  }}
-                                  disabled={githubMode && !githubWriteAccess}
-                                >
-                                  <Trash2 size={15} />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  <RecordListing
+                    rows={pageRows}
+                    allRows={rows}
+                    filteredRows={filtered}
+                    kind={kind}
+                    today={today}
+                    view={view}
+                    canEdit={!busy && (!githubMode || githubWriteAccess)}
+                    onOpen={openDetail}
+                    onEdit={openEditor}
+                    onDelete={setDeleting}
+                    onAttachment={async (row) => {
+                      try {
+                        window.open(
+                          await attachmentURL(row.attachment),
+                          "_blank",
+                          "noopener,noreferrer",
+                        );
+                      } catch (error) {
+                        setError(readableError(error));
+                      }
+                    }}
+                  />
+                )}
+                {!(kind === "tasks" && kanban) && (
+                  <Pagination
+                    page={currentPage}
+                    total={filtered.length}
+                    onChange={(page) => updateView({ page })}
+                  />
                 )}
                 <div className="table-footer">
                   <ShieldCheck size={13} />
@@ -1400,6 +1717,23 @@ export default function App() {
           },
         }}
       />
+      <GlobalSearch
+        open={globalSearchOpen}
+        rows={rows}
+        onClose={() => setGlobalSearchOpen(false)}
+        onOpen={openDetail}
+      />
+      <RecordDrawer
+        row={detailRow}
+        rows={rows}
+        onClose={() => setDetail(null)}
+        onOpen={openDetail}
+        onEdit={(row) => {
+          setDetail(null);
+          openEditor(row);
+        }}
+        canEdit={!busy && (!githubMode || githubWriteAccess)}
+      />
       <Editor
         key={editor?.id ?? "closed"}
         row={editor}
@@ -1408,6 +1742,7 @@ export default function App() {
         saveError={error}
         onClose={() => setEditor(null)}
         onSave={saveRow}
+        onDraftChange={rememberDraft}
       />
       <Modal
         open={!!deleting}
@@ -1460,7 +1795,13 @@ export default function App() {
             <Database size={22} />
           </div>
           <div>
-            <strong>{githubMode ? "GitHub 公共数据工作区" : cloudMode ? "CloudBase 云端工作区" : "本地工作区"}</strong>
+            <strong>
+              {githubMode
+                ? "GitHub 公共数据工作区"
+                : cloudMode
+                  ? "CloudBase 云端工作区"
+                  : "本地工作区"}
+            </strong>
             <p>
               {githubMode
                 ? "任何人都可读取公开数据；保存修改会提交到 GitHub，并在不同设备间同步。"
@@ -1475,34 +1816,70 @@ export default function App() {
           <div className="data-section">
             <h3>GitHub 编辑授权</h3>
             <p>
-              公开读取不需要登录。编辑时连接工作台指定账号的细粒度令牌，仅需授予目标公开仓库的 Contents 读写权限；每次保存都会生成公开提交记录。
+              公开读取不需要登录。编辑时连接工作台指定账号的细粒度令牌，仅需授予目标公开仓库的
+              Contents 读写权限；每次保存都会生成公开提交记录。
             </p>
             {user && githubWriteAccess ? (
               <div className="verification-list">
                 <div className="source-line">
                   <ShieldCheck size={18} />
-                  <span>已连接 GitHub 账号 {user} · 令牌只保存在当前浏览器标签页会话中</span>
+                  <span>
+                    已连接 {user} ·{" "}
+                    {deviceRemembered
+                      ? "此设备已记住编辑授权"
+                      : "当前标签页会话授权"}
+                  </span>
                 </div>
+                {!deviceRemembered && (
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      try {
+                        rememberGitHubDevice();
+                        setDeviceRemembered(true);
+                        setToast("此设备已记住编辑授权");
+                      } catch (error) {
+                        setGitHubAuthError(readableError(error));
+                      }
+                    }}
+                  >
+                    记住此设备
+                  </button>
+                )}
+                {githubAuthError && (
+                  <p className="form-error" role="alert">
+                    {githubAuthError}
+                  </p>
+                )}
                 <button
                   className="btn"
                   onClick={async () => {
                     await logout();
                     setUser(null);
                     setGitHubWriteAccess(false);
+                    setDeviceRemembered(false);
                     await reload();
                     setToast("已断开编辑授权，仍可公开查看数据");
                   }}
                 >
                   <LogOut size={15} />
-                  断开编辑授权
+                  忘记此设备并断开授权
                 </button>
               </div>
             ) : (
               <>
                 <p className="tiny">
-                  在 GitHub 创建细粒度个人访问令牌：资源所有者选仓库账号，只选工作台仓库，Repository permissions 中 Contents 设为 Read and write。不要创建经典令牌，也不要把令牌发给他人。
+                  在 GitHub
+                  创建细粒度个人访问令牌：资源所有者选仓库账号，只选工作台仓库，Repository
+                  permissions 中 Contents 设为 Read and
+                  write。不要创建经典令牌，也不要把令牌发给他人。
                 </p>
-                <a className="text-button" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">
+                <a
+                  className="text-button"
+                  href="https://github.com/settings/personal-access-tokens/new"
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   打开 GitHub 令牌设置 <ArrowUpRight size={13} />
                 </a>
                 <label className="field full-field">
@@ -1512,12 +1889,43 @@ export default function App() {
                     autoComplete="off"
                     spellCheck={false}
                     value={githubTokenInput}
-                    onChange={(event) => setGitHubTokenInput(event.target.value)}
+                    onChange={(event) =>
+                      setGitHubTokenInput(event.target.value)
+                    }
                     placeholder="github_pat_…"
                   />
                 </label>
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={rememberDevice}
+                    onChange={(event) =>
+                      setRememberDevice(event.target.checked)
+                    }
+                  />
+                  在此设备记住编辑授权
+                </label>
+                {deviceRemembered && (
+                  <button
+                    className="text-button"
+                    onClick={async () => {
+                      try {
+                        await logout();
+                        setDeviceRemembered(false);
+                        setUser(null);
+                        setGitHubWriteAccess(false);
+                      } catch (error) {
+                        setGitHubAuthError(readableError(error));
+                      }
+                    }}
+                  >
+                    忘记此设备
+                  </button>
+                )}
                 {githubAuthError && (
-                  <p className="form-error" role="alert">{githubAuthError}</p>
+                  <p className="form-error" role="alert">
+                    {githubAuthError}
+                  </p>
                 )}
                 <button
                   className="btn primary"
@@ -1534,6 +1942,24 @@ export default function App() {
             </p>
           </div>
         )}
+        <div className="data-section capacity-section">
+          <h3>工作区容量</h3>
+          <div className="capacity-values">
+            <span>
+              {rows.length} / {MAX_RECORDS} 条记录
+            </span>
+            <span>
+              {(workspaceBytes / 1024).toFixed(1)} /{" "}
+              {MAX_WORKSPACE_BYTES / 1024} KiB
+            </span>
+          </div>
+          <progress
+            aria-label="工作区容量使用比例"
+            max={1}
+            value={Math.min(capacity, 1)}
+          />
+          <p>全部模块共享容量，列表分页仅改变每次显示的条数。</p>
+        </div>
         <div className="data-section">
           <h3>备份与导出</h3>
           <p>
@@ -1565,21 +1991,24 @@ export default function App() {
           </div>
         </div>
         <div className="data-section">
-          <h3>企业微信 CLI 接入</h3>
+          <h3>企业微信 CLI 按需读取</h3>
           <p>
-            在已授权的电脑运行抓取脚本，选择本次读取的群。仅拉取最近 7
-            天的消息，生成候选运营记录；群成员总数、拉新人数须另行核验。
+            在已授权电脑上选择来源，按需读取最近 7
+            天群级消息计数，预览候选后导入。当前已有{" "}
+            {rows.filter((row) => row.source === "企业微信 CLI").length} 条 CLI
+            来源记录。
           </p>
           <div className="command-hint">
             <code>npm run wecom:check</code>
             <code>npm run wecom:pull -- --days 7 --group "实际群名"</code>
           </div>
           <p className="tiny">
-            凭据只留在本机，不会写入网页。消息内容作为数据保存，不执行其中的任何命令。相同来源记录重复导入不会重复新增。
+            凭据留在本机。公开快照使用已确认别名与群级计数，相同来源重复导入会查重；群成员、拉新和退出数需要对应的实测来源。
           </p>
           <p className="tiny">
-            最近一次文件导入：{timeText(workspace.lastImportAt)}
-            。抓取时间会保存在每条企业微信记录中。
+            上次 CLI 观察：
+            {latestWecomFetch ? timeText(latestWecomFetch) : "尚无读取记录"}
+            。最近文件导入：{timeText(workspace.lastImportAt)}。
           </p>
         </div>
         <div className="data-section">
@@ -1635,7 +2064,9 @@ export default function App() {
               <button
                 className="btn primary"
                 disabled={
-                  busy || (githubMode && !githubWriteAccess) || importPlan.plan.added + importPlan.plan.updated === 0
+                  busy ||
+                  (githubMode && !githubWriteAccess) ||
+                  importPlan.plan.added + importPlan.plan.updated === 0
                 }
                 onClick={doImport}
               >
@@ -1649,7 +2080,8 @@ export default function App() {
           <h3>GPT 网页操作</h3>
           <p>
             工作台已提供结构化操作接口与可直接操作的表单。公开访问可读取数据；GitHub
-            模式需先连接仓库所有者的编辑令牌，GPT 才可填写记录、更新任务状态、管理关联和导入数据。每次写入检查版本并返回结果；正在编辑草稿时会暂停外部写入。
+            模式需先连接仓库所有者的编辑令牌，GPT
+            才可填写记录、更新任务状态、管理关联和导入数据。每次写入检查版本并返回结果；正在编辑草稿时会暂停外部写入。
           </p>
           <p className="tiny">
             支持 WebMCP 的浏览器可发现 campus_* 工具；其他浏览器可通过页面操作或
@@ -1658,10 +2090,10 @@ export default function App() {
           </p>
         </div>
         <div className="data-section">
-          <h3>{githubMode ? "GitHub Pages 部署" : "云端配置"}</h3>
+          <h3>{githubMode ? "网站部署与数据保存" : "云端配置"}</h3>
           <p>
             {githubMode
-              ? "WorkBuddy 将公开仓库发布到 GitHub Pages。工作台通过 GitHub Contents API 读取公开 JSON；只有指定账号的细粒度令牌可以写入数据文件。"
+              ? "页面由 Vercel 部署，运营数据保存在 GitHub 工作区。数据保存成功后可在其他设备重新读取。"
               : "按项目 README 创建 CloudBase 环境、启用邮箱登录、应用数据库与存储规则，填写环境变量后重新构建。腾讯云 SecretKey 和企业微信授权信息禁止放入前端。"}
           </p>
           <div className="button-row">
@@ -1757,20 +2189,15 @@ function Metric({
     </section>
   );
 }
-function GrowthChart({ rows }: { rows: Row[] }) {
-  const data = rows
-    .filter(
-      (r) =>
-        r.kind === "recruitment" &&
-        r.direction === "新增" &&
-        r.countMode === "exact" &&
-        r.status === "已确认",
-    )
-    .map((r) => ({
-      name: r.channel || r.title,
-      value: r.count,
-      attribution: r.attribution,
-    }));
+function GrowthChart({
+  rows,
+  onSelect,
+}: {
+  rows: Row[];
+  onSelect: (channel: string, attribution: string) => void;
+}) {
+  const allChannels = useMemo(() => aggregateChannels(rows), [rows]);
+  const data = allChannels.slice(0, 12);
   if (!data.length)
     return (
       <div className="empty compact">
@@ -1779,58 +2206,82 @@ function GrowthChart({ rows }: { rows: Row[] }) {
       </div>
     );
   return (
-    <div className="chart-area">
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart
-          data={data}
-          layout="vertical"
-          margin={{ left: 0, right: 26, top: 10, bottom: 0 }}
-        >
-          <CartesianGrid
-            horizontal={false}
-            stroke="#edf1f7"
-            strokeDasharray="4 4"
-          />
-          <XAxis
-            type="number"
-            allowDecimals={false}
-            axisLine={false}
-            tickLine={false}
-            tick={{ fontSize: 11, fill: "#8894a7" }}
-          />
-          <YAxis
-            dataKey="name"
-            type="category"
-            width={86}
-            axisLine={false}
-            tickLine={false}
-            tick={{ fontSize: 12, fill: "#64748b" }}
-          />
-          <Tooltip
-            cursor={{ fill: "#f5f8ff" }}
-            formatter={(v) => [`${v} 人次`, "渠道记录"]}
-            contentStyle={{
-              border: "1px solid #edf1f7",
-              borderRadius: 10,
-              fontSize: 12,
-            }}
-          />
-          <Bar
-            isAnimationActive={false}
-            dataKey="value"
-            barSize={26}
-            radius={[0, 5, 5, 0]}
-            label={{ position: "right", fill: "#64748b", fontSize: 12 }}
+    <div className="growth-chart-container">
+      <div
+        className="chart-area"
+        style={{ height: Math.max(240, data.length * 40) }}
+      >
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart
+            data={data}
+            layout="vertical"
+            margin={{ left: 0, right: 26, top: 10, bottom: 0 }}
           >
-            {data.map((r, i) => (
-              <Cell
-                key={i}
-                fill={r.attribution === "团队" ? "#9b8afb" : "#4b7df5"}
-              />
-            ))}
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
+            <CartesianGrid
+              horizontal={false}
+              stroke="#edf1f7"
+              strokeDasharray="4 4"
+            />
+            <XAxis
+              type="number"
+              allowDecimals={false}
+              axisLine={false}
+              tickLine={false}
+              tick={{ fontSize: 11, fill: "#8894a7" }}
+            />
+            <YAxis
+              dataKey="name"
+              type="category"
+              width={132}
+              axisLine={false}
+              tickLine={false}
+              tick={{ fontSize: 12, fill: "#64748b" }}
+            />
+            <Tooltip
+              cursor={{ fill: "#f5f8ff" }}
+              formatter={(v) => [`${v} 人次`, "渠道记录"]}
+              contentStyle={{
+                border: "1px solid #edf1f7",
+                borderRadius: 10,
+                fontSize: 12,
+              }}
+            />
+            <Bar
+              isAnimationActive={false}
+              dataKey="value"
+              barSize={26}
+              radius={[0, 5, 5, 0]}
+              label={{ position: "right", fill: "#64748b", fontSize: 12 }}
+              onClick={(_, index) =>
+                onSelect(data[index].channel, data[index].attribution)
+              }
+            >
+              {data.map((r, i) => (
+                <Cell
+                  key={i}
+                  fill={r.attribution === "团队" ? "#9b8afb" : "#4b7df5"}
+                />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="chart-drilldown" aria-label="查看渠道明细">
+        {data.map((entry) => (
+          <button
+            key={entry.key}
+            className="view-pill"
+            onClick={() => onSelect(entry.channel, entry.attribution)}
+          >
+            {entry.name} <ArrowRight size={12} />
+          </button>
+        ))}
+      </div>
+      {allChannels.length > 12 && (
+        <p className="view-hint">
+          显示记录数最多的 12 个渠道与归属组合，全部数据可在拉新管理中查看。
+        </p>
+      )}
     </div>
   );
 }
@@ -1871,6 +2322,7 @@ function Editor({
   saveError,
   onClose,
   onSave,
+  onDraftChange,
 }: {
   row: Row | null;
   rows: Row[];
@@ -1878,10 +2330,40 @@ function Editor({
   saveError: string;
   onClose: () => void;
   onSave: (row: Row) => Promise<void>;
+  onDraftChange: (row: Row) => void;
 }) {
   const [draft, setDraft] = useState<Row | null>(row);
   const [error, setError] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [draftStorageError, setDraftStorageError] = useState("");
+  const baseRow = useRef(rows.find((item) => item.id === row?.id));
+  const firstDraftEffect = useRef(true);
+  useEffect(() => {
+    if (!draft) return;
+    if (firstDraftEffect.current) {
+      firstDraftEffect.current = false;
+      return;
+    }
+    try {
+      const prior = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
+      localStorage.setItem(
+        DRAFT_KEY,
+        JSON.stringify({
+          row: draft,
+          baseRow:
+            prior?.row?.id === draft.id ? prior.baseRow : baseRow.current,
+          baseUpdatedAt:
+            prior?.row?.id === draft.id
+              ? prior.baseUpdatedAt
+              : (baseRow.current?.updatedAt ?? ""),
+        }),
+      );
+      onDraftChange(draft);
+      setDraftStorageError("");
+    } catch {
+      setDraftStorageError("此浏览器无法保存恢复草稿，请在关闭前导出草稿。");
+    }
+  }, [draft]);
   if (!draft) return null;
   const d = draft;
   const field = <K extends keyof Row>(key: K, value: Row[K]) =>
@@ -1896,6 +2378,21 @@ function Editor({
     if (!parsed.success) {
       setError(readableError(parsed.error));
       return;
+    }
+    try {
+      const prior = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
+      const latest = rows.find((item) => item.id === d.id);
+      const changed = prior?.baseRow
+        ? JSON.stringify(prior.baseRow) !== JSON.stringify(latest)
+        : prior?.baseUpdatedAt && prior.baseUpdatedAt !== latest?.updatedAt;
+      if (changed) {
+        setError(
+          "这条记录已有更新。请先导出草稿，关闭后查看最新记录，再选择需要保留的内容。",
+        );
+        return;
+      }
+    } catch {
+      /* Saving remains available if browser draft storage is unavailable. */
     }
     await onSave(parsed.data);
   }
@@ -2189,6 +2686,11 @@ function Editor({
           {d.sourceUpdatedAt && ` · 抓取于 ${timeText(d.sourceUpdatedAt)}`}
           {d.sourceKey && " · 已启用来源去重"}
         </div>
+        {draftStorageError && (
+          <p className="form-error" role="alert">
+            {draftStorageError}
+          </p>
+        )}
         {(error || saveError) && (
           <p className="form-error" role="alert">
             {error || saveError}
@@ -2201,7 +2703,16 @@ function Editor({
             onClick={onClose}
             disabled={busy || uploading}
           >
-            取消
+            保留草稿并关闭
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={() =>
+              download("工作台_记录草稿.json", JSON.stringify(d, null, 2))
+            }
+          >
+            导出草稿
           </button>
           <button
             className="btn primary"

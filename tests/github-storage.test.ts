@@ -4,6 +4,8 @@ import {
   clearGitHubCredential,
   connectGitHubEditor,
   loadGitHubWorkspace,
+  currentGitHubEditor,
+  remembersGitHubDevice,
   saveGitHubWorkspace,
 } from "../src/github-storage";
 
@@ -14,6 +16,7 @@ const settings = {
   editorLogin: "hxujunjie",
 };
 const session = new Map<string, string>();
+const device = new Map<string, string>();
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -25,6 +28,12 @@ const encode = (body: unknown) =>
 beforeEach(() => {
   vi.stubEnv("VITE_DATA_MODE", "local");
   session.clear();
+  device.clear();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => device.get(key) ?? null,
+    setItem: (key: string, value: string) => device.set(key, value),
+    removeItem: (key: string) => device.delete(key),
+  });
   vi.stubGlobal("sessionStorage", {
     getItem: (key: string) => session.get(key) ?? null,
     setItem: (key: string, value: string) => session.set(key, value),
@@ -39,9 +48,11 @@ describe("GitHub 公共数据与授权写入", () => {
     const snapshot = { workspace: seedWorkspace(), revision: 7 };
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(JSON.stringify(snapshot), { status: 200 }),
-      ),
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify(snapshot), { status: 200 }),
+        ),
     );
     const loaded = await loadGitHubWorkspace(settings);
     expect(loaded.revision).toBe(7);
@@ -80,17 +91,89 @@ describe("GitHub 公共数据与授权写入", () => {
     const current = { workspace: seedWorkspace(), revision: 3 };
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(json({ sha: "blob-v3", encoding: "base64", content: encode(current) }))
-      .mockResolvedValueOnce(json({ commit: { sha: "commit-v4" } }));
+      .mockResolvedValueOnce(
+        json({ sha: "blob-v3", encoding: "base64", content: encode(current) }),
+      )
+      .mockResolvedValueOnce(json({ commit: { sha: "commit-v4" } }))
+      .mockResolvedValueOnce(
+        json({
+          encoding: "base64",
+          content: encode({ ...current, revision: 4 }),
+        }),
+      );
     vi.stubGlobal("fetch", fetchMock);
     session.set("campus-console:github-edit-token:v1", "github_pat_test");
 
     const next = await saveGitHubWorkspace(current.workspace, 3, settings);
     expect(next.revision).toBe(4);
+    expect(next.receipt?.verified).toBe(true);
+    expect(next.receipt?.commitUrl).toContain("commit-v4");
+    expect(fetchMock.mock.calls[2][0]).toContain("ref=commit-v4");
     const put = fetchMock.mock.calls[1];
     expect(put[1]?.method).toBe("PUT");
     expect(JSON.parse(String(put[1]?.body)).sha).toBe("blob-v3");
     expect(JSON.parse(String(put[1]?.body)).content).toBeTruthy();
+  });
+
+  it("成功提交后回读失败保留提交回执，避免误报为写入失败", async () => {
+    session.set("campus-console:github-edit-token:v1", "github_pat_test");
+    const current = { workspace: seedWorkspace(), revision: 3 };
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          json({
+            sha: "blob-v3",
+            encoding: "base64",
+            content: encode(current),
+          }),
+        )
+        .mockResolvedValueOnce(json({ commit: { sha: "commit-v4" } }))
+        .mockRejectedValueOnce(new Error("network")),
+    );
+    const saved = await saveGitHubWorkspace(current.workspace, 3, settings);
+    expect(saved.revision).toBe(4);
+    expect(saved.receipt).toMatchObject({
+      verified: false,
+      commitUrl: expect.stringContaining("commit-v4"),
+    });
+  });
+
+  it("写入响应中断后先回读，识别已经成功的同一版本", async () => {
+    session.set("campus-console:github-edit-token:v1", "github_pat_test");
+    const current = { workspace: seedWorkspace(), revision: 3 };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        json({ sha: "blob-v3", encoding: "base64", content: encode(current) }),
+      )
+      .mockRejectedValueOnce(new Error("lost response"))
+      .mockResolvedValueOnce(
+        json({
+          encoding: "base64",
+          content: encode({ ...current, revision: 4 }),
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const saved = await saveGitHubWorkspace(current.workspace, 3, settings);
+    expect(saved.receipt?.verified).toBe(true);
+    expect(
+      fetchMock.mock.calls.filter((call) => call[1]?.method === "PUT"),
+    ).toHaveLength(1);
+  });
+
+  it("网络或临时拒绝保留设备授权，确定失效时清除", async () => {
+    device.set("campus-console:github-edit-token:v1", "github_pat_test");
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValueOnce(new Error("network")));
+    expect(await currentGitHubEditor(settings)).toBeNull();
+    expect(remembersGitHubDevice()).toBe(true);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(json({}, 403)));
+    expect(await currentGitHubEditor(settings)).toBeNull();
+    expect(remembersGitHubDevice()).toBe(true);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(json({}, 401)));
+    expect(await currentGitHubEditor(settings)).toBeNull();
+    expect(remembersGitHubDevice()).toBe(false);
   });
 
   it("发现另一设备已更新时拒绝写入", async () => {

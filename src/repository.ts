@@ -8,6 +8,7 @@ import {
   loadGitHubWorkspace,
   saveGitHubWorkspace,
   type GitHubSettings,
+  type SaveReceipt,
 } from "./github-storage";
 
 export const cloudMode = import.meta.env.VITE_DATA_MODE === "cloudbase";
@@ -19,7 +20,11 @@ const githubSettings: GitHubSettings = {
   path: import.meta.env.VITE_GITHUB_DATA_PATH || "data/workspace.json",
   editorLogin: import.meta.env.VITE_GITHUB_EDITOR_LOGIN ?? "",
 };
-export type Snapshot = { workspace: Workspace; revision: number };
+export type Snapshot = {
+  workspace: Workspace;
+  revision: number;
+  receipt?: SaveReceipt;
+};
 export class ConflictError extends Error {
   constructor() {
     super(
@@ -45,23 +50,19 @@ async function cloud() {
 export async function currentUser(): Promise<string | null> {
   if (githubMode) return currentGitHubEditor(githubSettings);
   if (!cloudMode) return "本地工作区";
-  const state = await (
-    await cloud()
-  )
+  const state = await (await cloud())
     .auth({ persistence: "local" })
     .getLoginState();
   return state?.user?.uid ?? null;
 }
 export async function login(email: string, password: string) {
-  await (
-    await cloud()
-  )
+  await (await cloud())
     .auth({ persistence: "local" })
     .signInWithEmailAndPassword(email, password);
 }
-export async function connectGitHub(token: string) {
+export async function connectGitHub(token: string, remember = false) {
   if (!githubMode) throw new Error("当前没有启用 GitHub 数据模式。");
-  return connectGitHubEditor(token, githubSettings);
+  return connectGitHubEditor(token, githubSettings, remember);
 }
 export async function logout() {
   if (cloudMode) await (await cloud()).auth().signOut();
@@ -99,15 +100,13 @@ export async function loadWorkspace(): Promise<Snapshot> {
     };
   const workspace = seedWorkspace();
   try {
-    await db
-      .collection("campus_workspaces")
-      .add({
-        _id: uid,
-        _openid: uid,
-        revision: 0,
-        payload: JSON.stringify(workspace),
-        updatedAt: workspace.updatedAt,
-      });
+    await db.collection("campus_workspaces").add({
+      _id: uid,
+      _openid: uid,
+      revision: 0,
+      payload: JSON.stringify(workspace),
+      updatedAt: workspace.updatedAt,
+    });
   } catch {
     const retry = await db
       .collection("campus_workspaces")

@@ -4,7 +4,15 @@ if (args[0] === "--version") console.log("wecom-cli 1.3.4");
 else if (args[0] === "auth") console.log("authorized");
 else {
   const params = JSON.parse(args[args.indexOf("--json") + 1]);
-  if (args[1] === "groups")
+  if (args[1] === "groups" && process.env.QA_API_ERROR === "1") {
+    console.log(
+      JSON.stringify({
+        errcode: 853006,
+        errmsg: "synthetic failure with hidden id 123456789 and IP 192.0.2.1",
+      }),
+    );
+    process.exitCode = 1;
+  } else if (args[1] === "groups")
     console.log(
       JSON.stringify({
         chats: [
@@ -12,9 +20,13 @@ else {
             chat_id: "fixture-internal-group",
             chat_name: "验收测试群",
             last_msg_time: "2026-11-02 10:00:00",
+            msg_count: Number(process.env.QA_MESSAGE_COUNT || 2),
           },
         ],
-        has_more: false,
+        has_more: process.env.QA_BAD_CURSOR === "1",
+        ...(process.env.QA_BAD_CURSOR === "1"
+          ? { next_cursor: "repeat" }
+          : {}),
       }),
     );
   else if (process.env.QA_BAD_CURSOR === "1")

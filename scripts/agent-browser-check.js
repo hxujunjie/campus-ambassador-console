@@ -18,7 +18,7 @@ async (previewPage) => {
   await page.getByRole('button', { name: '新增任务', exact: true }).first().click();
   const blocked = await page.evaluate(async ({ id, revision }) => { try { await window.campusWorkbench.mutate({ expectedRevision: revision, operations: [{ type: 'delete', id }] }); return false; } catch { return true; } }, { id: record.rows[0].id, revision: readBack.revision });
   assert(blocked, '正在编辑的页面草稿阻止 GPT 写入');
-  await page.getByRole('button', { name: '取消', exact: true }).click();
+  await page.getByRole('button', { name: '保留草稿并关闭', exact: true }).click();
   const stale = await page.evaluate(async ({ id, revision }) => { try { await window.campusWorkbench.mutate({ expectedRevision: revision - 1, operations: [{ type: 'delete', id }] }); return false; } catch { return true; } }, { id: record.rows[0].id, revision: readBack.revision });
   assert(stale, 'GPT 旧版本提交被拒绝');
   await page.evaluate(async ({ id, revision }) => window.campusWorkbench.mutate({ expectedRevision: revision, operations: [{ type: 'delete', id }] }), { id: record.rows[0].id, revision: readBack.revision });

@@ -4,7 +4,7 @@ async (previewPage) => {
   try {
   const checks = [];
   const assert = (condition, message) => { if (!condition) throw new Error(message); checks.push(message); };
-  const nav = async (name) => { if (await page.getByRole('button', { name: '打开导航', exact: true }).isVisible()) await page.getByRole('button', { name: '打开导航', exact: true }).click(); await page.getByRole('navigation').getByRole('button', { name: new RegExp('^' + name) }).click(); };
+  const nav = async (name) => { if (await page.getByRole('button', { name: '打开导航', exact: true }).isVisible()) await page.getByRole('button', { name: '打开导航', exact: true }).click(); await page.locator('.sidebar nav').getByRole('button', { name: new RegExp('^' + name) }).click(); };
   const state = () => page.evaluate(() => JSON.parse(localStorage.getItem('campus-console:workspace:v1')));
   const save = async () => { await page.getByRole('button', { name: '保存记录', exact: true }).click(); await page.getByRole('dialog').waitFor({ state: 'hidden' }); };
   const create = async (button, name, setup) => { await page.getByRole('button', { name: button, exact: true }).first().click(); await page.getByRole('dialog').getByRole('textbox', { name: '名称 *', exact: true }).fill(name); if (setup) await setup(page.getByRole('dialog')); await save(); };
@@ -41,6 +41,7 @@ async (previewPage) => {
   await page.getByRole('button', { name: '数据中心', exact: true }).click();
   const backupPromise = page.waitForEvent('download'); await page.getByRole('button', { name: '完整 JSON 备份', exact: true }).click(); const backup = await backupPromise; await backup.saveAs('output/playwright/backup.json');
   await page.getByLabel('选择导入文件', { exact: true }).setInputFiles('output/playwright/backup.json');
+  await page.locator('.import-preview').waitFor();
   assert((await page.getByText(/新增 0 条 · 更新 0 条 · 冲突 0 条/).count()) === 1, '完整备份重复导入保持幂等');
   const imported = { type: 'wecom-candidates', version: 1, rows: [{ id: 'qa-wecom-candidate', kind: 'interactions', title: '验收临时企业微信候选', status: '待核实', source: '企业微信 CLI', sourceKey: 'qa:wecom:candidate', updatedAt: new Date().toISOString(), notes: '自动化验收临时数据，结束时删除。' }] };
   await page.getByLabel('选择导入文件', { exact: true }).setInputFiles({ name: 'qa-candidates.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(imported)) });
@@ -54,11 +55,11 @@ async (previewPage) => {
   await page.getByRole('dialog').getByRole('textbox', { name: '说明 / 核验口径', exact: true }).fill('旧窗口的草稿'); await page.getByRole('button', { name: '保存记录', exact: true }).click();
   await page.getByRole('dialog').getByRole('alert').waitFor();
   assert((await state()).workspace.rows.find(r => r.title === '验收临时拉新').notes === '另一个窗口的最新内容', '多窗口旧版本提交被拒绝且保留最新数据');
-  await page.getByRole('button', { name: '取消', exact: true }).click(); await other.close(); await page.getByRole('button', { name: '重新读取数据', exact: true }).click();
+  await page.getByRole('button', { name: '保留草稿并关闭', exact: true }).click(); await page.getByRole('button', { name: '放弃草稿', exact: true }).click(); await other.close(); await page.getByRole('button', { name: '重新读取数据', exact: true }).click();
   await remove('验收临时拉新');
   await nav('社群运营'); await page.getByRole('button', { name: /^运营记录 \d+$/ }).click(); await remove('验收临时企业微信候选');
   await nav('活动与内容'); await page.getByRole('button', { name: /^内容 \d+$/ }).click(); await remove('验收临时内容'); await page.getByRole('button', { name: /^活动 \d+$/ }).click(); await remove('验收临时活动');
-  await nav('任务中心'); await page.getByRole('button', { name: '列表', exact: true }).click(); await remove('验收临时任务');
+  await nav('任务中心'); await page.getByRole('button', { name: '历史任务', exact: true }).click(); await page.getByRole('button', { name: '列表', exact: true }).click(); await remove('验收临时任务');
   await nav('成果与复盘'); await remove('验收临时复盘');
   assert((await state()).workspace.rows.length === 8, '临时验收数据全部清理，保留原始记录');
   // This is the isolated QA browser: remove the synthetic import timestamp after cleanup.
