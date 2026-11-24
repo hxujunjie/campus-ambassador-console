@@ -70,9 +70,11 @@ export const rowSchema = z
     sourceUpdatedAt: z.string().max(50).default(""),
     attachment: z.string().max(2000).default(""),
     updatedAt: z.string().max(50),
+    memberObservedAt: optionalDate.optional(),
     netGrowth: z.object({ startCount: z.number().int().min(0).max(10000000), endCount: z.number().int().min(0).max(10000000), startDate: optionalDate.default("") }).optional(),
   })
   .superRefine((v, ctx) => {
+    if (v.memberObservedAt && v.kind !== "communities") ctx.addIssue({code: "custom", message: "成员观察日期只适用于社群档案", path: ["memberObservedAt"]});
     if (v.netGrowth && (v.kind !== "recruitment" || v.direction !== "新增" || v.countMode !== "unknown" || v.count !== null || (v.netGrowth.startDate && (!v.date || v.netGrowth.startDate > v.date))))
       ctx.addIssue({ code: "custom", message: "阶段净增长须单独记录起止人数，不可同时填写毛新增；起始日期不得晚于结束日期", path: ["netGrowth"] });
     if (v.countMode !== "unknown" && v.count === null)
@@ -257,14 +259,14 @@ export function communitySize(rows: Row[]) {
   const groups = rows.filter(r => r.kind === "communities");
   const complete = groups.length > 0 && groups.every(isConfirmedExact);
   const groupSum = complete ? groups.reduce((sum,r) => sum + r.count!,0) : null;
-  const sameDate = complete && !!groups[0].date && groups.every(r => r.date === groups[0].date) ? groups[0].date : "";
+  const sameDate = complete && !!groups[0].memberObservedAt && groups.every(r => r.memberObservedAt === groups[0].memberObservedAt) ? groups[0].memberObservedAt! : "";
   const snapshotConflict = !!latest && snapshots.some(r => r.date === latest.date && r.count !== latest.count);
   const groupConflict = !!latest && sameDate === latest.date && groupSum !== latest.count;
   if (snapshotConflict || groupConflict) return { count: null, date: latest?.date || "", source: "冲突待核实", conflict: true };
   if (latest && (!sameDate || latest.date >= sameDate))
-    return { count: latest.count, date: latest.date, source: "用户确认总人数快照", conflict: false };
+    return { count: latest.count, date: latest.date, source: "已确认总人数快照", conflict: false };
   if (complete && (!latest || sameDate > latest.date))
-    return { count: groupSum, date: sameDate, source: "分群人数合计（未去重）", conflict: false };
+    return { count: groupSum, date: sameDate, source: sameDate ? "同期分群人数合计（未去重）" : "分群已记录人数合计（日期未核实、未去重）", conflict: false };
   return { count: null, date: "", source: "待补充", conflict: false };
 }
 export function calculate(
