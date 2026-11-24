@@ -70,8 +70,11 @@ export const rowSchema = z
     sourceUpdatedAt: z.string().max(50).default(""),
     attachment: z.string().max(2000).default(""),
     updatedAt: z.string().max(50),
+    netGrowth: z.object({ startCount: z.number().int().min(0).max(10000000), endCount: z.number().int().min(0).max(10000000), startDate: optionalDate.default("") }).optional(),
   })
   .superRefine((v, ctx) => {
+    if (v.netGrowth && (v.kind !== "recruitment" || v.direction !== "新增" || v.countMode !== "unknown" || v.count !== null || (v.netGrowth.startDate && (!v.date || v.netGrowth.startDate > v.date))))
+      ctx.addIssue({ code: "custom", message: "阶段净增长须单独记录起止人数，不可同时填写毛新增；起始日期不得晚于结束日期", path: ["netGrowth"] });
     if (v.countMode !== "unknown" && v.count === null)
       ctx.addIssue({
         code: "custom",
@@ -94,7 +97,9 @@ export const rowSchema = z
 export type Row = z.infer<typeof rowSchema>;
 export const workspaceSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.union([z.literal(1), z.literal(2)]),
+    changeLog: z.array(z.unknown()).optional(),
+    narrativeAlerts: z.array(z.unknown()).optional(),
     rows: z.array(rowSchema).max(3000),
     updatedAt: z.string().max(50),
     lastImportAt: z.string().max(50).default(""),
@@ -230,10 +235,37 @@ export function seedWorkspace(): Workspace {
     ],
   };
 }
-export function countText(r: Pick<Row, "count" | "countMode">) {
+export function countText(r: Pick<Row, "count" | "countMode" | "netGrowth">) {
+  if (r.netGrowth) {
+    const net = r.netGrowth.endCount - r.netGrowth.startCount;
+    return `净增 ${net > 0 ? "+" : ""}${net}（${r.netGrowth.startCount}→${r.netGrowth.endCount}）`;
+  }
   return r.countMode === "unknown" || r.count === null
     ? "未量化"
     : `${r.countMode === "lt" ? "< " : ""}${r.count}`;
+}
+// The same predicate drives metrics, charts and exact-detail filters.
+export function isConfirmedExact(r: Row) {
+  return r.status === "已确认" && r.countMode === "exact" && r.count !== null && !r.netGrowth;
+}
+export function isTotalSnapshot(r: Row) {
+  return r.kind === "interactions" && !r.groupId && r.channel === "社群人数快照" && isConfirmedExact(r) && !!r.date;
+}
+export function communitySize(rows: Row[]) {
+  const snapshots = rows.filter(isTotalSnapshot).sort((a,b) => b.date.localeCompare(a.date) || a.id.localeCompare(b.id));
+  const latest = snapshots[0];
+  const groups = rows.filter(r => r.kind === "communities");
+  const complete = groups.length > 0 && groups.every(isConfirmedExact);
+  const groupSum = complete ? groups.reduce((sum,r) => sum + r.count!,0) : null;
+  const sameDate = complete && !!groups[0].date && groups.every(r => r.date === groups[0].date) ? groups[0].date : "";
+  const snapshotConflict = !!latest && snapshots.some(r => r.date === latest.date && r.count !== latest.count);
+  const groupConflict = !!latest && sameDate === latest.date && groupSum !== latest.count;
+  if (snapshotConflict || groupConflict) return { count: null, date: latest?.date || "", source: "冲突待核实", conflict: true };
+  if (latest && (!sameDate || latest.date >= sameDate))
+    return { count: latest.count, date: latest.date, source: "用户确认总人数快照", conflict: false };
+  if (complete && (!latest || sameDate > latest.date))
+    return { count: groupSum, date: sameDate, source: "分群人数合计（未去重）", conflict: false };
+  return { count: null, date: "", source: "待补充", conflict: false };
 }
 export function calculate(
   rows: Row[],
@@ -245,26 +277,23 @@ export function calculate(
       .filter(
         (r) =>
           r.direction === direction &&
-          r.countMode === "exact" &&
-          r.status === "已确认" &&
+          isConfirmedExact(r) &&
           (r.attribution === "团队") === team,
       )
       .reduce((s, r) => s + (r.count ?? 0), 0);
   const tasks = rows.filter((r) => r.kind === "tasks");
-  const groups = rows.filter((r) => r.kind === "communities");
-  const groupsComplete =
-    groups.length > 0 &&
-    groups.every(
-      (r) =>
-        r.countMode === "exact" && r.count !== null && r.status === "已确认",
-    );
+  const size = communitySize(rows);
+  const stages = growth.filter(r => r.status === "已确认" && !!r.netGrowth).sort((a,b) => b.date.localeCompare(a.date));
   return {
     channelCount: exact("新增", false),
     teamCount: exact("新增", true),
     exits: exact("退出", false) + exact("退出", true),
-    groupCount: groupsComplete
-      ? groups.reduce((s, r) => s + r.count!, 0)
-      : null,
+    groupCount: size.count,
+    groupDate: size.date,
+    groupSource: size.source,
+    groupConflict: size.conflict,
+    stages,
+    unquantifiedGrowth: growth.filter(r => r.direction === "新增" && !r.netGrowth && !isConfirmedExact(r)).length,
     pending: rows.filter((r) => ["待核实", "未量化"].includes(r.status)).length,
     tasks,
     openTasks: tasks.filter((r) => !["已完成", "已取消"].includes(r.status)),
@@ -332,8 +361,8 @@ export function toCSV(rows: Row[], all: Row[] = rows): string {
         r.dueDate,
         r.channel,
         r.category,
-        r.countMode === "unknown" ? "" : r.count,
-        r.countMode === "exact"
+        r.netGrowth ? r.netGrowth.endCount - r.netGrowth.startCount : r.countMode === "unknown" ? "" : r.count,
+        r.netGrowth ? `阶段净增（${r.netGrowth.startCount}→${r.netGrowth.endCount}）` : r.countMode === "exact"
           ? "确切值"
           : r.countMode === "lt"
             ? "小于"
@@ -397,7 +426,7 @@ export function planImport(
         skipped++;
         continue;
       }
-      if (!overwrite) {
+      if (!overwrite || (rows[idx].source === "手动录入" && r.source !== "手动录入") || (rows[idx].updatedAt > r.updatedAt)) {
         conflicts++;
         continue;
       }
