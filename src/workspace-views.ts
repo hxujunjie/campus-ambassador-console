@@ -1,4 +1,4 @@
-import { kinds, type Kind, type Row } from "./domain";
+import { isConfirmedExact, kinds, type Kind, type Row } from "./domain";
 
 export const MAX_RECORDS = 3000;
 export const MAX_WORKSPACE_BYTES = 750 * 1024;
@@ -233,8 +233,7 @@ export function aggregateChannels(rows: Row[]) {
     if (
       row.kind !== "recruitment" ||
       row.direction !== "新增" ||
-      row.countMode !== "exact" ||
-      row.status !== "已确认"
+      !isConfirmedExact(row)
     )
       continue;
     const channel = row.channel || row.title;
