@@ -2464,7 +2464,7 @@ function Editor({
                   aria-label="记录方向"
                   value={d.direction}
                   onChange={(e) =>
-                    field("direction", e.target.value as Row["direction"])
+                    setDraft({...d, direction: e.target.value as Row["direction"], netGrowth: e.target.value === "新增" ? d.netGrowth : undefined})
                   }
                 >
                   {["新增", "退出", "其他"].map((v) => (
@@ -2489,6 +2489,8 @@ function Editor({
             </>
           )}
           {d.kind === "recruitment" && d.direction === "新增" && <><label className="field">数量口径<select value={d.netGrowth ? "net" : "gross"} onChange={e => setDraft(e.target.value === "net" ? {...d, count: null, countMode: "unknown", netGrowth: {startCount: 0, endCount: 0, startDate: ""}} : {...d, netGrowth: undefined})}><option value="gross">渠道毛新增 / 未量化</option><option value="net">阶段净增长</option></select></label>{d.netGrowth && <><label className="field">阶段起始人数<input required type="number" min={0} max={10000000} value={d.netGrowth.startCount} onChange={e => field("netGrowth", {...d.netGrowth!, startCount: e.target.value === "" ? NaN : Number(e.target.value)})}/></label><label className="field">阶段结束人数<input required type="number" min={0} max={10000000} value={d.netGrowth.endCount} onChange={e => field("netGrowth", {...d.netGrowth!, endCount: e.target.value === "" ? NaN : Number(e.target.value)})}/></label><label className="field">阶段起始日期（未知可空）<input type="date" value={d.netGrowth.startDate} onChange={e => field("netGrowth", {...d.netGrowth!, startDate: e.target.value})}/></label></>}</>}
+          {d.kind === "interactions" && <label className="field">统计类型<select value={d.channel === "社群人数快照" ? "total" : "other"} onChange={e => setDraft({...d, channel: e.target.value === "total" ? "社群人数快照" : "", groupId: e.target.value === "total" ? "" : d.groupId})}><option value="other">普通运营记录</option><option value="total">全社群人数快照</option></select><small>总人数快照须确认日期、确切人数，且不关联单个群。</small></label>}
+          {d.kind === "communities" && <label className="field">成员数观察日期<input type="date" value={d.memberObservedAt || ""} onChange={e => field("memberObservedAt", e.target.value)}/><small>与建群日期分开；同日完整分群人数才能替代较早的总人数快照。</small></label>}
           {!d.netGrowth && [
             "recruitment",
             "communities",
@@ -2582,7 +2584,7 @@ function Editor({
               </label>
             </>
           )}
-          {d.kind !== "communities" && (
+          {d.kind !== "communities" && !(d.kind === "interactions" && d.channel === "社群人数快照") && (
             <label className="field">
               关联社群
               <select
