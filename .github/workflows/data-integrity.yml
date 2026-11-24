@@ -1,0 +1,27 @@
+name: Data integrity
+on:
+  push:
+    branches: ["main", "fix/v1.4-data-integrity"]
+  pull_request:
+    branches: ["main"]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+        env:
+          VITE_DATA_MODE: github
+          VITE_GITHUB_REPOSITORY: hxujunjie/campus-ambassador-console
+          VITE_GITHUB_BRANCH: main
+          VITE_GITHUB_DATA_PATH: data/workspace.json
+          VITE_GITHUB_EDITOR_LOGIN: hxujunjie
+          VITE_BASE_PATH: /

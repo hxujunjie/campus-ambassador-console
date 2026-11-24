@@ -227,7 +227,7 @@ export default function App() {
   });
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [today, setToday] = useState(beijingDate);
-  const [overviewTime, setOverviewTime] = useState<TimeMode>("month");
+  const [overviewTime, setOverviewTime] = useState<TimeMode>("all");
   const [overviewStart, setOverviewStart] = useState("");
   const [overviewEnd, setOverviewEnd] = useState("");
   const [boardLimits, setBoardLimits] = useState<Record<string, number>>({});
@@ -294,6 +294,7 @@ export default function App() {
     () => filterRows(rows, kind, view, today),
     [rows, kind, view, today],
   );
+  const visibleMetrics = useMemo(() => calculate(filtered), [filtered]);
   const ordered = useMemo(
     () =>
       view.groupByMonth
@@ -521,6 +522,10 @@ export default function App() {
       [targetKind]: { ...initialView(targetKind), preset: "", status },
     }));
   }
+  function openRecruitmentPeriod() {
+    navigate("recruitment");
+    setViews(current => ({ ...current, recruitment: { ...initialView("recruitment"), timeMode: overviewTime, start: overviewStart, end: overviewEnd } }));
+  }
   function selectChannel(channel: string, attribution: string) {
     navigate("recruitment");
     setViews((current) => ({
@@ -670,7 +675,7 @@ export default function App() {
     }
   }
   function exportReview() {
-    const text = `# 校园 AI 运营复盘\n\n生成时间：${timeText(new Date().toISOString())}\n\n## 已确认的数据口径\n\n- 非团队渠道新增记录：${metrics.channelCount}（渠道记录之和，未经跨渠道去重，不等于个人拉新人数）\n- 团队共同邀请记录：${metrics.teamCount}（不计入个人成果）\n- 成员退出记录：${metrics.exits}\n- 群成员数合计：${metrics.groupCount ?? "待核实"}（不同群可能存在重复成员）\n- 待核实 / 未量化记录：${metrics.pending}\n- 考核日期：未提供\n\n## 运营记录与证据\n\n${rows
+    const text = `# 校园 AI 运营复盘\n\n生成时间：${timeText(new Date().toISOString())}\n\n## 已确认的数据口径\n\n- 非团队渠道新增记录：${metrics.channelCount}（渠道记录之和，未经跨渠道去重，不等于个人拉新人数）\n- 团队共同邀请记录：${metrics.teamCount}（不计入个人成果）\n- 成员退出记录：${metrics.exits}\n- 群成员数合计：${metrics.groupCount ?? "待核实"}（${metrics.groupSource}；${metrics.groupDate || "日期待核实"}；不同群可能存在重复成员）\n- 阶段净增长（不可直接累加）：${metrics.stages.map(r => `${r.channel || r.title} ${countText(r)}`).join("；") || "无"}\n- 待核实 / 未量化记录：${metrics.pending}\n- 考核日期：未提供\n\n## 运营记录与证据\n\n${rows
       .filter((r) => r.kind !== "tasks")
       .map(
         (r) =>
@@ -1124,14 +1129,15 @@ export default function App() {
                   color="orange"
                 />
                 <Metric
-                  title="当前群成员数合计"
+                  title="最新确认社群人数"
                   value={metrics.groupCount ?? "待补充"}
                   unit={metrics.groupCount !== null ? "人次" : ""}
-                  note="截至当前 · 以实测日期为准"
+                  note={`${metrics.groupSource}${metrics.groupDate ? ` · ${metrics.groupDate}` : ""}`}
                   icon={<ShieldCheck size={20} />}
                   color="teal"
                 />
               </div>
+              <section className="panel" style={{padding: 16, marginBottom: 16}}><h3>阶段净增长（独立口径，不跨阶段累计）</h3>{periodMetrics.stages.map(r => <p key={r.id}>{r.channel || r.title} · {countText(r)} · {r.date || "日期待核实"}</p>)}{!periodMetrics.stages.length && <p>该期间无已确认阶段记录</p>}<p>未量化或待核实新增记录：{periodMetrics.unquantifiedGrowth} 条。群人数不等于渠道新增记录之和。</p>{metrics.groupConflict && <p role="alert">同日人数快照冲突，请核实。</p>}</section>
               <div className="dashboard-grid">
                 <section className="panel chart-panel">
                   <PanelHeader
@@ -1140,7 +1146,7 @@ export default function App() {
                     action={
                       <button
                         className="text-button"
-                        onClick={() => navigate("recruitment")}
+                        onClick={openRecruitmentPeriod}
                       >
                         查看记录 <ArrowRight size={14} />
                       </button>
@@ -1164,7 +1170,7 @@ export default function App() {
                         (r) =>
                           r.kind === "recruitment" &&
                           r.direction === "新增" &&
-                          (r.countMode !== "exact" || r.status !== "已确认"),
+                          !r.netGrowth && (r.countMode !== "exact" || r.status !== "已确认"),
                       ).length
                     }{" "}
                     条新增记录尚无已确认确切值，暂不纳入图表。
@@ -1354,6 +1360,7 @@ export default function App() {
                   </p>
                 </div>
               )}
+              {(page === "recruitment" || page === "community") && <div className="notice"><p>最新确认社群人数：{metrics.groupCount ?? "待核实"}（{metrics.groupSource}{metrics.groupDate ? ` · ${metrics.groupDate}` : ""}）{page === "recruitment" && <>；当前筛选全部明细：非团队新增 {visibleMetrics.channelCount} 人次，团队新增 {visibleMetrics.teamCount} 人次，退出 {visibleMetrics.exits} 人次。阶段净增不计入毛新增。{visibleMetrics.stages.map(r => <span key={r.id}>；{r.channel || r.title} {countText(r)}</span>)}</>}</p></div>}
               {page === "reviews" && (
                 <div className="review-banner">
                   <div>
@@ -2457,7 +2464,7 @@ function Editor({
                   aria-label="记录方向"
                   value={d.direction}
                   onChange={(e) =>
-                    field("direction", e.target.value as Row["direction"])
+                    setDraft({...d, direction: e.target.value as Row["direction"], netGrowth: e.target.value === "新增" ? d.netGrowth : undefined})
                   }
                 >
                   {["新增", "退出", "其他"].map((v) => (
@@ -2481,7 +2488,10 @@ function Editor({
               </label>
             </>
           )}
-          {[
+          {d.kind === "recruitment" && d.direction === "新增" && <><label className="field">数量口径<select value={d.netGrowth ? "net" : "gross"} onChange={e => setDraft(e.target.value === "net" ? {...d, count: null, countMode: "unknown", netGrowth: {startCount: 0, endCount: 0, startDate: ""}} : {...d, netGrowth: undefined})}><option value="gross">渠道毛新增 / 未量化</option><option value="net">阶段净增长</option></select></label>{d.netGrowth && <><label className="field">阶段起始人数<input required type="number" min={0} max={10000000} value={d.netGrowth.startCount} onChange={e => field("netGrowth", {...d.netGrowth!, startCount: e.target.value === "" ? NaN : Number(e.target.value)})}/></label><label className="field">阶段结束人数<input required type="number" min={0} max={10000000} value={d.netGrowth.endCount} onChange={e => field("netGrowth", {...d.netGrowth!, endCount: e.target.value === "" ? NaN : Number(e.target.value)})}/></label><label className="field">阶段起始日期（未知可空）<input type="date" value={d.netGrowth.startDate} onChange={e => field("netGrowth", {...d.netGrowth!, startDate: e.target.value})}/></label></>}</>}
+          {d.kind === "interactions" && <label className="field">统计类型<select value={d.channel === "社群人数快照" ? "total" : "other"} onChange={e => setDraft({...d, channel: e.target.value === "total" ? "社群人数快照" : "", groupId: e.target.value === "total" ? "" : d.groupId})}><option value="other">普通运营记录</option><option value="total">全社群人数快照</option></select><small>总人数快照须确认日期、确切人数，且不关联单个群。</small></label>}
+          {d.kind === "communities" && <label className="field">成员数观察日期<input type="date" value={d.memberObservedAt || ""} onChange={e => field("memberObservedAt", e.target.value)}/><small>与建群日期分开；同日完整分群人数才能替代较早的总人数快照。</small></label>}
+          {!d.netGrowth && [
             "recruitment",
             "communities",
             "interactions",
@@ -2574,7 +2584,7 @@ function Editor({
               </label>
             </>
           )}
-          {d.kind !== "communities" && (
+          {d.kind !== "communities" && !(d.kind === "interactions" && d.channel === "社群人数快照") && (
             <label className="field">
               关联社群
               <select
